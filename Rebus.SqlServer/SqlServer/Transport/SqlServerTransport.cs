@@ -1,11 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Data.SqlClient;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Data.SqlClient;
 using Rebus.Bus;
 using Rebus.Config;
 using Rebus.Exceptions;
@@ -47,7 +47,6 @@ namespace Rebus.SqlServer.Transport
         /// </summary>
         public static readonly TimeSpan DefaultExpiredMessagesCleanupInterval = TimeSpan.FromSeconds(20);
 
-        // TODO: This value should probably be used in creating of database
         /// <summary>
         /// Size, in the database, of the recipient column
         /// </summary>
@@ -190,10 +189,10 @@ IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{ta
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = '{receiveIndexName}')
     CREATE NONCLUSTERED INDEX [{receiveIndexName}] ON {tableName.QualifiedName}
     (
-        [priority] DESC,
+	    [priority] ASC,
         [visible] ASC,
-        [id] ASC,
-        [expiration] ASC
+        [expiration] ASC,
+	    [id] ASC
     )
 
 ----
@@ -435,6 +434,8 @@ IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{tableN
             throw new InvalidOperationException($"Attempted to defer message, but no '{Headers.DeferredRecipient}' header was on the message");
         }
 
+        private readonly SemaphoreSlim myLock = new SemaphoreSlim(1, 1);
+
         /// <summary>
         /// Performs persistence of a message to the underlying table
         /// </summary>
@@ -444,10 +445,13 @@ IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{tableN
         protected async Task InnerSend(string destinationAddress, TransportMessage message, IDbConnection connection)
         {
             var sendTable = TableName.Parse(destinationAddress);
-            
-            using (var command = connection.CreateCommand())
+
+            await myLock.WaitAsync(TimeSpan.FromSeconds(5));
+            try
             {
-                command.CommandText = $@"
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = $@"
 INSERT INTO {sendTable.QualifiedName}
 (
     [headers],
@@ -465,24 +469,29 @@ VALUES
     dateadd(ms, @ttlmilliseconds, dateadd(ss, @ttltotalseconds, sysdatetimeoffset()))
 )";
 
-                var headers = message.Headers.Clone();
+                    var headers = message.Headers.Clone();
 
-                var priority = GetMessagePriority(headers);
-                var visible = GetInitialVisibilityDelay(headers);
-                var ttl = GetTtl(headers);
+                    var priority = GetMessagePriority(headers);
+                    var visible = GetInitialVisibilityDelay(headers);
+                    var ttl = GetTtl(headers);
 
-                // must be last because the other functions on the headers might change them
-                var serializedHeaders = HeaderSerializer.Serialize(headers);
+                    // must be last because the other functions on the headers might change them
+                    var serializedHeaders = HeaderSerializer.Serialize(headers);
 
-                command.Parameters.Add("headers", SqlDbType.VarBinary, MathUtil.GetNextPowerOfTwo(serializedHeaders.Length)).Value = serializedHeaders;
-                command.Parameters.Add("body", SqlDbType.VarBinary, MathUtil.GetNextPowerOfTwo(message.Body.Length)).Value = message.Body;
-                command.Parameters.Add("priority", SqlDbType.Int).Value = priority;
-                command.Parameters.Add("visibiletotalseconds", SqlDbType.Int).Value = (int)visible.TotalSeconds;
-                command.Parameters.Add("visibilemilliseconds", SqlDbType.Int).Value = visible.Milliseconds;
-                command.Parameters.Add("ttltotalseconds", SqlDbType.Int).Value = (int)ttl.TotalSeconds;
-                command.Parameters.Add("ttlmilliseconds", SqlDbType.Int).Value = ttl.Milliseconds;
+                    command.Parameters.Add("headers", SqlDbType.VarBinary, MathUtil.GetNextPowerOfTwo(serializedHeaders.Length)).Value = serializedHeaders;
+                    command.Parameters.Add("body", SqlDbType.VarBinary, MathUtil.GetNextPowerOfTwo(message.Body.Length)).Value = message.Body;
+                    command.Parameters.Add("priority", SqlDbType.Int).Value = priority;
+                    command.Parameters.Add("visibiletotalseconds", SqlDbType.Int).Value = (int)visible.TotalSeconds;
+                    command.Parameters.Add("visibilemilliseconds", SqlDbType.Int).Value = visible.Milliseconds;
+                    command.Parameters.Add("ttltotalseconds", SqlDbType.Int).Value = (int)ttl.TotalSeconds;
+                    command.Parameters.Add("ttlmilliseconds", SqlDbType.Int).Value = ttl.Milliseconds;
 
-                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+                    await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                myLock.Release();
             }
         }
 
