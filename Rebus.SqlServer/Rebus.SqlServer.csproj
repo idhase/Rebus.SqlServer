@@ -16,6 +16,8 @@
     <PackageIcon>little_rebusbus2_copy-500x500.png</PackageIcon>
     <RepositoryUrl>https://github.com/rebus-org/Rebus</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageId>Idha.Rebus.SqlServer</PackageId>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -38,7 +40,7 @@
     <DocumentationFile>bin\Release\Rebus.SqlServer.xml</DocumentationFile>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="microsoft.data.sqlclient" Version="2.0.0" />
+    <PackageReference Include="microsoft.data.sqlclient" Version="2.0.1" />
     <PackageReference Include="rebus" Version="6.0.0" />
   </ItemGroup>
   <ItemGroup>
