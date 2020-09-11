@@ -9,6 +9,11 @@ namespace Rebus.SqlServer
     public class TableName : IEquatable<TableName>
     {
         /// <summary>
+        /// Gets the catalog name of the table
+        /// </summary>
+        public string Catalog { get; }
+
+        /// <summary>
         /// Gets the schema name of the table
         /// </summary>
         public string Schema { get; }
@@ -18,7 +23,7 @@ namespace Rebus.SqlServer
         /// </summary>
         public string Name { get; }
 
-        internal string QualifiedName => $"[{Schema}].[{Name}]";
+        internal string QualifiedName => string.IsNullOrWhiteSpace(Catalog) ? $"[{Schema}].[{Name}]" : $"[{Catalog}].[{Schema}].[{Name}]";
 
         /// <summary>
         /// Creates a <see cref="TableName"/> object with the given schema and table names
@@ -30,6 +35,20 @@ namespace Rebus.SqlServer
 
             Schema = StripBrackets(schema);
             Name = StripBrackets(tableName);
+        }
+
+        /// <summary>
+        /// Creates a <see cref="TableName"/> object with the given schema and table names
+        /// </summary>
+        public TableName(string schema, string tableName, string catalog)
+        {
+            if (schema == null) throw new ArgumentNullException(nameof(schema));
+            if (tableName == null) throw new ArgumentNullException(nameof(tableName));
+            if (catalog == null) throw new ArgumentNullException(nameof(tableName));
+
+            Schema = StripBrackets(schema);
+            Name = StripBrackets(tableName);
+            Catalog = StripBrackets(catalog);
         }
 
         /// <summary>
@@ -75,6 +94,11 @@ namespace Rebus.SqlServer
             if (parts.Length == 2)
             {
                 return new TableName(parts[0], parts[1]);
+            }
+
+            if(parts.Length == 3)
+            {
+                return new TableName(parts[1], parts[2], parts[0]);
             }
 
             throw new ArgumentException(

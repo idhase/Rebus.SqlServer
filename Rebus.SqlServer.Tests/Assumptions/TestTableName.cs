@@ -28,6 +28,7 @@ namespace Rebus.SqlServer.Tests.Assumptions
         [TestCase("table].  [schema")]
         [TestCase("table].   [schema")]
         [TestCase("table] . [schema")]
+        [TestCase("catalog]. [table] . [schema")]
         public void RegexSplitter(string text)
         {
             var partsThingie = Regex.Split(text, @"\][ ]*\.[ ]*\[");
@@ -48,13 +49,15 @@ namespace Rebus.SqlServer.Tests.Assumptions
         [TestCase("[Schema name with . in it] .[Table name with . in it]", "Schema name with . in it", "Table name with . in it")]
         [TestCase("[Schema name with . in it] . [Table name with . in it]", "Schema name with . in it", "Table name with . in it")]
         [TestCase("[Schema name with . in it]. [Table name with . in it]", "Schema name with . in it", "Table name with . in it")]
-        public void MoreExamples(string input, string expectedSchema, string expectedTable)
+        [TestCase("[catalog name with . in it]. [Schema name with . in it]. [Table name with . in it]", "Schema name with . in it", "Table name with . in it", "catalog name with . in it")]
+        public void MoreExamples(string input, string expectedSchema, string expectedTable, string expectedCatalog = null)
         {
             var tableName = TableName.Parse(input);
 
             Assert.That(tableName.Schema, Is.EqualTo(expectedSchema));
             Assert.That(tableName.Name, Is.EqualTo(expectedTable));
-            Assert.That(tableName.QualifiedName, Is.EqualTo($"[{expectedSchema}].[{expectedTable}]"));
+            Assert.That(tableName.Catalog, Is.EqualTo(expectedCatalog));
+            Assert.That(tableName.QualifiedName,  expectedCatalog == null ? Is.EqualTo($"[{expectedSchema}].[{expectedTable}]") : Is.EqualTo($"[{expectedCatalog}].[{expectedSchema}].[{expectedTable}]"));
         }
 
         [Test]
@@ -64,6 +67,7 @@ namespace Rebus.SqlServer.Tests.Assumptions
 
             Assert.AreEqual(table.Name, "TableName");
             Assert.AreEqual(table.Schema, "dbo");
+            Assert.IsNull(table.Catalog);
             Assert.AreEqual(table.QualifiedName, "[dbo].[TableName]");
         }
 
@@ -74,6 +78,7 @@ namespace Rebus.SqlServer.Tests.Assumptions
 
             Assert.AreEqual(table.Name, "TableName");
             Assert.AreEqual(table.Schema, "dbo");
+            Assert.IsNull(table.Catalog);
             Assert.AreEqual(table.QualifiedName, "[dbo].[TableName]");
         }
 
@@ -84,6 +89,7 @@ namespace Rebus.SqlServer.Tests.Assumptions
 
             Assert.AreEqual(table.Name, "TableName");
             Assert.AreEqual(table.Schema, "schema");
+            Assert.IsNull(table.Catalog);
             Assert.AreEqual(table.QualifiedName, "[schema].[TableName]");
         }
 
@@ -94,7 +100,30 @@ namespace Rebus.SqlServer.Tests.Assumptions
 
             Assert.AreEqual(table.Name, "TableName");
             Assert.AreEqual(table.Schema, "schema");
+            Assert.IsNull(table.Catalog);
             Assert.AreEqual(table.QualifiedName, "[schema].[TableName]");
+        }
+
+        [Test]
+        public void ParsesNameWithSchemaAndCatalog()
+        {
+            var table = TableName.Parse("catalog.schema.TableName");
+
+            Assert.AreEqual(table.Name, "TableName");
+            Assert.AreEqual(table.Schema, "schema");
+            Assert.AreEqual(table.Catalog, "catalog");
+            Assert.AreEqual(table.QualifiedName, "[catalog].[schema].[TableName]");
+        }
+
+        [Test]
+        public void ParsesBracketsNameWithSchemaAndCatalog()
+        {
+            var table = TableName.Parse("[catalog].[schema].[TableName]");
+
+            Assert.AreEqual(table.Name, "TableName");
+            Assert.AreEqual(table.Schema, "schema");
+            Assert.AreEqual(table.Catalog, "catalog");
+            Assert.AreEqual(table.QualifiedName, "[catalog].[schema].[TableName]");
         }
     }
 }

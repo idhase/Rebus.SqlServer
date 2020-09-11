@@ -28,7 +28,7 @@ namespace Rebus.SqlServer
         public static List<TableName> GetTableNames(this SqlConnection connection, SqlTransaction transaction = null)
         {
             return GetNamesFrom(connection, transaction, "INFORMATION_SCHEMA.TABLES", new []{ "TABLE_SCHEMA", "TABLE_NAME" })
-                .Select(x => new TableName((string)x.TABLE_SCHEMA, (string)x.TABLE_NAME))
+                .Select(x => new TableName((string)x.TABLE_SCHEMA, (string)x.TABLE_NAME, connection.Database))
                 .ToList();
         }
 
