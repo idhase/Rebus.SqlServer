@@ -42,6 +42,15 @@ namespace Rebus.SqlServer
         }
 
         /// <summary>
+        /// Gets the active SqlConnection
+        /// </summary>
+        public SqlConnection Connection => _connection;
+        /// <summary>
+        /// Gets the active SqlTransaction
+        /// </summary>
+        public SqlTransaction Transaction => _currentTransaction;
+
+        /// <summary>
         /// Gets the names of all the tables in the current database for the current schema
         /// </summary>
         public IEnumerable<TableName> GetTableNames()

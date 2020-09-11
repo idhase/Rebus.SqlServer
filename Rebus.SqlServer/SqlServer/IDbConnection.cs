@@ -18,6 +18,15 @@ namespace Rebus.SqlServer
         SqlCommand CreateCommand();
 
         /// <summary>
+        /// Gets the active SqlConnection
+        /// </summary>
+        SqlConnection Connection { get; }
+        /// <summary>
+        /// Gets the active SqlTransaction
+        /// </summary>
+        SqlTransaction Transaction { get; }
+
+        /// <summary>
         /// Gets the names of all the tables in the current database for the current schema
         /// </summary>
         IEnumerable<TableName> GetTableNames();

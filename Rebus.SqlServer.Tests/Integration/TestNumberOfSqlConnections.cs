@@ -81,6 +81,9 @@ namespace Rebus.SqlServer.Tests.Integration
                     return _innerConnection.CreateCommand();
                 }
 
+                public SqlConnection Connection => _innerConnection.Connection;
+                public SqlTransaction Transaction => _innerConnection.Transaction;
+
                 public IEnumerable<TableName> GetTableNames()
                 {
                     return _innerConnection.GetTableNames();
