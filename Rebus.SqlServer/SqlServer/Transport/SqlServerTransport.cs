@@ -375,7 +375,7 @@ IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{tableN
 	OUTPUT	deleted.[id] as [id],
 			deleted.[headers] as [headers],
 			deleted.[body] as [body]
-						
+    SET NOCOUNT OFF								
 						";
 
                 try
