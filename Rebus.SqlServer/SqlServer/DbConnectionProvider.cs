@@ -32,7 +32,7 @@ namespace Rebus.SqlServer
 
             _log = rebusLoggerFactory.GetLogger<DbConnectionProvider>();
 
-            _connectionString = EnsureMarsIsEnabled(connectionString);
+            _connectionString = connectionString; //EnsureMarsIsEnabled(connectionString);
             _enlistInAmbientTransaction = enlistInAmbientTransaction;
             IsolationLevel = IsolationLevel.ReadCommitted;
         }
