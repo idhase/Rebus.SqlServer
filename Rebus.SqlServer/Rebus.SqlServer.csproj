@@ -14,9 +14,14 @@
     <Copyright>Copyright 2012-2018</Copyright>
     <PackageTags>rebus queue messaging service bus sql-server sqlserver mssql sql</PackageTags>
     <PackageIcon>little_rebusbus2_copy-500x500.png</PackageIcon>
-    <RepositoryUrl>https://github.com/rebus-org/Rebus</RepositoryUrl>
+    <RepositoryUrl>https://github.com/idhase/Rebus.SqlServer.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <LangVersion>latest</LangVersion>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <PackageId>Idha.Rebus.SqlServer</PackageId>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
