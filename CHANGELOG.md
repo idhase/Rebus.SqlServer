@@ -95,6 +95,12 @@
 ## 7.0.1
 * Modify receive index for better performance - thanks [seankearon]
 
+## 7.1.0
+* Add `ISagaSerializer` thus making it possible to customize how saga data is serialized - thanks [mathiasnohall]
+
+## 7.1.1
+* Don't leave connection with NOCOUNT ON in the transport - can interfere with other stuff using the connection
+
 ----
 
 [clegendre]: https://github.com/clegendre
@@ -102,6 +108,7 @@
 [IsaacSee]: https://github.com/IsaacSee
 [larsw]: https://github.com/larsw
 [magnus-tretton37]: https://github.com/magnus-tretton37
+[mathiasnohall]: https://github.com/mathiasnohall
 [MrMDavidson]: https://github.com/MrMDavidson
 [nativenolde]: https://github.com/nativenolde
 [rsivanov]: https://github.com/rsivanov

@@ -355,6 +355,7 @@ IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{tableN
             using (var selectCommand = connection.CreateCommand())
             {
                 selectCommand.CommandText = $@"
+
 	SET NOCOUNT ON
 
 	;WITH TopCTE AS (
@@ -375,7 +376,8 @@ IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{tableN
 	OUTPUT	deleted.[id] as [id],
 			deleted.[headers] as [headers],
 			deleted.[body] as [body]
-    SET NOCOUNT OFF								
+					
+	SET NOCOUNT OFF
 						";
 
                 try
