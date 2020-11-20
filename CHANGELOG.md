@@ -101,6 +101,21 @@
 ## 7.1.1
 * Don't leave connection with NOCOUNT ON in the transport - can interfere with other stuff using the connection
 
+## 7.1.2
+* Adjustments to the new saga data serializer: Pass type to deserialize method (note: this is breaking, if you've implemented your own `ISagaSerializer`) - thanks [mathiasnohall]
+
+## 7.1.3
+* Correct XML docs on `DbConnectionFactoryProvider` (were copy/pasted from another implementation of `IDbConnectionProvider`), remove isolation level property from it (wasn't used), and remove logging antipattern
+
+## 7.1.4
+* Add necessary overloaded constructor to `SqlServerTransportOptions` to enable resolving an `IDbConnectionProvider` implementation that requires other things (e.g. `IRebusLoggerFactory`). Also add `SqlConnectionOpening` callback to `DbConnectionProvider`, which makes for a good place to set the `AccessToken` property of `SqlConnection`
+
+## 7.1.5
+* Add addition configuration overloads to allow for consistent level of customization across persisters
+
+## 7.1.6
+* Fix bug in saga data serializer configuration - thanks [mathiasnohall]
+
 ----
 
 [clegendre]: https://github.com/clegendre

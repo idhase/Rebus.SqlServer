@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Rebus.DataBus;
 using Rebus.Logging;
@@ -48,13 +49,44 @@ namespace Rebus.Config
             {
                 var rebusTime = c.Get<IRebusTime>();
                 var loggerFactory = c.Get<IRebusLoggerFactory>();
-                var connectionProvider = new DbConnectionFactoryProvider(connectionFactory, loggerFactory);
+                var connectionProvider = new DbConnectionFactoryProvider(connectionFactory);
                 return new SqlServerDataBusStorage(connectionProvider, tableName, automaticallyCreateTables, loggerFactory, rebusTime, commandTimeout);
             });
 
             configurer.Register(c => c.Get<SqlServerDataBusStorage>());
 
             configurer.OtherService<IDataBusStorageManagement>().Register(c => c.Get<SqlServerDataBusStorage>());
+        }
+
+        /// <summary>
+        /// Configures the data bus to store data in a central SQL Server 
+        /// </summary>
+        public static void StoreInSqlServer(this StandardConfigurer<IDataBusStorage> configurer, SqlServerDataBusOptions options, string tableName)
+        {
+            if (configurer == null) throw new ArgumentNullException(nameof(configurer));
+
+            configurer.OtherService<SqlServerDataBusStorage>().Register(c =>
+            {
+                var connectionProvider = options.ConnectionProviderFactory(c);
+                var rebusTime = c.Get<IRebusTime>();
+                var loggerFactory = c.Get<IRebusLoggerFactory>();
+                var automaticallyCreateTables = options.EnsureTablesAreCreated;
+                var commandTimeoutSeconds = (int)options.CommandTimeout.TotalSeconds;
+                
+                return new SqlServerDataBusStorage(
+                    connectionProvider: connectionProvider,
+                    tableName: tableName,
+                    ensureTableIsCreated: automaticallyCreateTables,
+                    rebusLoggerFactory: loggerFactory,
+                    rebusTime: rebusTime,
+                    commandTimeout: commandTimeoutSeconds
+                );
+            });
+
+            configurer.Register(c => c.Get<SqlServerDataBusStorage>());
+
+            configurer.OtherService<IDataBusStorageManagement>().Register(c => c.Get<SqlServerDataBusStorage>());
+
         }
     }
 }

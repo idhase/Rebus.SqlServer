@@ -10,7 +10,7 @@ namespace Rebus.Config
     /// <summary>
     /// Describes options used to configure the <seealso cref="SqlServerTransport"/>
     /// </summary>
-    public class SqlServerTransportOptions
+    public class SqlServerTransportOptions : SqlServerOptions
     {
         /// <summary>
         /// Create an instance of the transport with a pre-created <seealso cref="DbConnectionProvider"/>
@@ -21,11 +21,19 @@ namespace Rebus.Config
         }
 
         /// <summary>
+        /// Create an instance of the transport with a <paramref name="connectionProviderFactory"/> that can use the <see cref="IResolutionContext"/> to look up things
+        /// </summary>
+        public SqlServerTransportOptions(Func<IResolutionContext, IDbConnectionProvider> connectionProviderFactory)
+        {
+            ConnectionProviderFactory = connectionProviderFactory ?? throw new ArgumentNullException(nameof(connectionProviderFactory));
+        }
+
+        /// <summary>
         /// Creates an instance of the transport connecting via <paramref name="connectionString"/>
         /// </summary>
         public SqlServerTransportOptions(string connectionString, bool enlistInAmbientTransaction = false)
         {
-            ConnectionProviderFactory = (resolutionContext) => new DbConnectionProvider(connectionString, resolutionContext.Get<IRebusLoggerFactory>(), enlistInAmbientTransaction);
+            ConnectionProviderFactory = resolutionContext => new DbConnectionProvider(connectionString, resolutionContext.Get<IRebusLoggerFactory>(), enlistInAmbientTransaction);
         }
 
         /// <summary>
@@ -33,13 +41,8 @@ namespace Rebus.Config
         /// </summary>
         public SqlServerTransportOptions(Func<Task<IDbConnection>> connectionFactory)
         {
-            ConnectionProviderFactory = (resolutionContext) => new DbConnectionFactoryProvider(connectionFactory, resolutionContext.Get<IRebusLoggerFactory>());
+            ConnectionProviderFactory = resolutionContext => new DbConnectionFactoryProvider(connectionFactory);
         }
-
-        /// <summary>
-        /// Connection provider used to create connections for the transport
-        /// </summary>
-        public Func<IResolutionContext, IDbConnectionProvider> ConnectionProviderFactory { get; }
 
         /// <summary>
         /// Name of the input queue to process. If <c>null</c> or whitespace the transport will be configured in one way mode (send only)
@@ -50,11 +53,6 @@ namespace Rebus.Config
         /// If <c>true</c> the transport is configured in one way mode
         /// </summary>
         public bool IsOneWayQueue => InputQueueName == null;
-
-        /// <summary>
-        /// If <c>false</c> tables will not be created and must be created outside of Rebus
-        /// </summary>
-        public bool EnsureTablesAreCreated { get; internal set; } = true;
 
         /// <summary>
         /// If true, the input queue table will be automatically dropped on transport disposal
