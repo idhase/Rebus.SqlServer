@@ -32,6 +32,7 @@ namespace Rebus.SqlServer.Tests.Transport
             Configure.With(_activator)
                 .Logging(l => l.Use(_loggerFactory))
                 .Transport(t => t.UseSqlServer(new SqlServerTransportOptions(SqlTestHelper.ConnectionString), queueName))
+                .Options(o => o.SetNumberOfWorkers(0))
                 .Start();
         }
 
@@ -52,6 +53,8 @@ namespace Rebus.SqlServer.Tests.Transport
 
                 doneHandlingMessage.Set();
             });
+            
+            _activator.Bus.Advanced.Workers.SetNumberOfWorkers(1);
 
             _activator.Bus.SendLocal("hej med dig min ven!").Wait();
 

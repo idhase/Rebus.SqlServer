@@ -32,6 +32,7 @@ namespace Rebus.SqlServer.Tests.Bugs
 
             Configure.With(receiver)
                 .Transport(t => t.UseSqlServer(new SqlServerTransportOptions(ConnectionString), "receiver"))
+                .Options(o => o.SetNumberOfWorkers(0))
                 .Start();
 
             var senderBus = Configure.With(new BuiltinHandlerActivator())
@@ -58,6 +59,10 @@ namespace Rebus.SqlServer.Tests.Bugs
             var gotTheString = new ManualResetEvent(false);
 
             receiver.Handle<string>(async message => gotTheString.Set());
+            
+            receiver.Bus.Advanced.Workers.SetNumberOfWorkers(1);
+            
+            senderBus.Advanced.Workers.SetNumberOfWorkers(1);
 
             var optionalHeaders = usePipelineStep
                 ? new Dictionary<string, string>()

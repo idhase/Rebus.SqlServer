@@ -34,6 +34,7 @@ namespace Rebus.SqlServer.Tests.Integration
                 .Routing(r => r.TypeBased().Map<TimedMessage>(QueueName))
                 .Options(o =>
                 {
+                    o.SetNumberOfWorkers(0);
                     o.LogPipeline();
                 })
                 .Start();
@@ -55,6 +56,8 @@ namespace Rebus.SqlServer.Tests.Integration
                 done.Set();
             });
 
+            _bus.Advanced.Workers.SetNumberOfWorkers(1);
+            
             var sendTime = DateTimeOffset.Now;
 
             await _bus.Defer(TimeSpan.FromSeconds(5), new TimedMessage { Time = sendTime });
