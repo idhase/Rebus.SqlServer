@@ -71,6 +71,7 @@ namespace Rebus.SqlServer.Transport
         
         readonly AsyncBottleneck _bottleneck = new AsyncBottleneck(20);
         readonly IAsyncTask _expiredMessagesCleanupTask;
+        readonly bool _nativeTimeoutManagerDisabled;
         readonly bool _autoDeleteQueue;
         bool _disposed;
 
@@ -93,6 +94,8 @@ namespace Rebus.SqlServer.Transport
 
             _expiredMessagesCleanupTask = asyncTaskFactory.Create("ExpiredMessagesCleanup", PerformExpiredMessagesCleanupCycle, intervalSeconds: intervalSeconds);
             _autoDeleteQueue = options.AutoDeleteQueue;
+
+            _nativeTimeoutManagerDisabled = options.NativeTimeoutManagerDisabled;
         }
 
         /// <summary>
@@ -421,7 +424,7 @@ IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{tableN
         /// </summary>
         protected static string GetDestinationAddressToUse(string destinationAddress, TransportMessage message)
         {
-            return string.Equals(destinationAddress, MagicExternalTimeoutManagerAddress, StringComparison.CurrentCultureIgnoreCase)
+            return string.Equals(destinationAddress, MagicExternalTimeoutManagerAddress, StringComparison.OrdinalIgnoreCase)
                 ? GetDeferredRecipient(message)
                 : destinationAddress;
         }
@@ -467,7 +470,7 @@ VALUES
     @headers,
     @body,
     @priority,
-    dateadd(ms, @visibilemilliseconds, dateadd(ss, @visibiletotalseconds, sysdatetimeoffset())),
+    dateadd(ms, @visiblemilliseconds, dateadd(ss, @visibletotalseconds, sysdatetimeoffset())),
     dateadd(ms, @ttlmilliseconds, dateadd(ss, @ttltotalseconds, sysdatetimeoffset()))
 )";
 
@@ -480,13 +483,13 @@ VALUES
                     // must be last because the other functions on the headers might change them
                     var serializedHeaders = HeaderSerializer.Serialize(headers);
 
-                    command.Parameters.Add("headers", SqlDbType.VarBinary, MathUtil.GetNextPowerOfTwo(serializedHeaders.Length)).Value = serializedHeaders;
-                    command.Parameters.Add("body", SqlDbType.VarBinary, MathUtil.GetNextPowerOfTwo(message.Body.Length)).Value = message.Body;
-                    command.Parameters.Add("priority", SqlDbType.Int).Value = priority;
-                    command.Parameters.Add("visibiletotalseconds", SqlDbType.Int).Value = (int)visible.TotalSeconds;
-                    command.Parameters.Add("visibilemilliseconds", SqlDbType.Int).Value = visible.Milliseconds;
-                    command.Parameters.Add("ttltotalseconds", SqlDbType.Int).Value = (int)ttl.TotalSeconds;
-                    command.Parameters.Add("ttlmilliseconds", SqlDbType.Int).Value = ttl.Milliseconds;
+                command.Parameters.Add("headers", SqlDbType.VarBinary, MathUtil.GetNextPowerOfTwo(serializedHeaders.Length)).Value = serializedHeaders;
+                command.Parameters.Add("body", SqlDbType.VarBinary, MathUtil.GetNextPowerOfTwo(message.Body.Length)).Value = message.Body;
+                command.Parameters.Add("priority", SqlDbType.Int).Value = priority;
+                command.Parameters.Add("visibletotalseconds", SqlDbType.Int).Value = (int)visible.TotalSeconds;
+                command.Parameters.Add("visiblemilliseconds", SqlDbType.Int).Value = visible.Milliseconds;
+                command.Parameters.Add("ttltotalseconds", SqlDbType.Int).Value = (int)ttl.TotalSeconds;
+                command.Parameters.Add("ttlmilliseconds", SqlDbType.Int).Value = ttl.Milliseconds;
 
                     await command.ExecuteNonQueryAsync().ConfigureAwait(false);
                 }
@@ -499,6 +502,11 @@ VALUES
 
         TimeSpan GetInitialVisibilityDelay(IDictionary<string, string> headers)
         {
+            if (_nativeTimeoutManagerDisabled)
+            {
+                return TimeSpan.Zero;
+            }
+
             if (!headers.TryGetValue(Headers.DeferredUntil, out var deferredUntilDateTimeOffsetString))
             {
                 return TimeSpan.Zero;
@@ -509,6 +517,7 @@ VALUES
             headers.Remove(Headers.DeferredUntil);
 
             var visibilityDelay = deferredUntilTime - _rebusTime.Now;
+
             return visibilityDelay;
         }
 
