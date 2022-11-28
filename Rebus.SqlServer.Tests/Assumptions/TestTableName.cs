@@ -2,21 +2,21 @@
 using System.Text.RegularExpressions;
 using NUnit.Framework;
 
-namespace Rebus.SqlServer.Tests.Assumptions
-{
-    [TestFixture]
-    public class TestTableName
-    {
-        [TestCase("[bimse]", "[bimse]", true)]
-        [TestCase("[bimse]", "[BIMSE]", true)]
-        public void CheckEquality(string name1, string name2, bool expectedToBeEqual)
-        {
-            var tableName1 = TableName.Parse(name1);
-            var tableName2 = TableName.Parse(name2);
+namespace Rebus.SqlServer.Tests.Assumptions;
 
-            var what = expectedToBeEqual
-                ? Is.EqualTo(tableName2)
-                : Is.Not.EqualTo(tableName2);
+[TestFixture]
+public class TestTableName
+{
+    [TestCase("[bimse]", "[bimse]", true)]
+    [TestCase("[bimse]", "[BIMSE]", true)]
+    public void CheckEquality(string name1, string name2, bool expectedToBeEqual)
+    {
+        var tableName1 = TableName.Parse(name1);
+        var tableName2 = TableName.Parse(name2);
+
+        var what = expectedToBeEqual
+            ? Is.EqualTo(tableName2)
+            : Is.Not.EqualTo(tableName2);
 
             Assert.That(tableName1, what);
         }
@@ -125,5 +125,91 @@ namespace Rebus.SqlServer.Tests.Assumptions
             Assert.AreEqual(table.Catalog, "catalog");
             Assert.AreEqual(table.QualifiedName, "[catalog].[schema].[TableName]");
         }
+    }
+
+    [TestCase("table].[schema")]
+    [TestCase("table] .[schema")]
+    [TestCase("table]  .[schema")]
+    [TestCase("table]. [schema")]
+    [TestCase("table].  [schema")]
+    [TestCase("table].   [schema")]
+    [TestCase("table] . [schema")]
+    public void RegexSplitter(string text)
+    {
+        var partsThingie = Regex.Split(text, @"\][ ]*\.[ ]*\[");
+
+        Console.WriteLine($"Found parts: {string.Join(", ", partsThingie)}");
+    }
+
+
+    [TestCase("table", "dbo", "table")]
+    [TestCase("[table]", "dbo", "table")]
+    [TestCase("dbo.table", "dbo", "table")]
+    [TestCase("schema.table", "schema", "table")]
+    [TestCase("[schema].[table]", "schema", "table")]
+    [TestCase("[Table name with spaces in it]", "dbo", "Table name with spaces in it")]
+    [TestCase("[Table name with . in it]", "dbo", "Table name with . in it")]
+    [TestCase("[schema-qualified table name with dots in it].[Table name with . in it]", "schema-qualified table name with dots in it", "Table name with . in it")]
+    [TestCase("[Schema name with . in it].[Table name with . in it]", "Schema name with . in it", "Table name with . in it")]
+    [TestCase("[Schema name with . in it] .[Table name with . in it]", "Schema name with . in it", "Table name with . in it")]
+    [TestCase("[Schema name with . in it] . [Table name with . in it]", "Schema name with . in it", "Table name with . in it")]
+    [TestCase("[Schema name with . in it]. [Table name with . in it]", "Schema name with . in it", "Table name with . in it")]
+    public void MoreExamples(string input, string expectedSchema, string expectedTable)
+    {
+        var tableName = TableName.Parse(input);
+
+        Assert.That(tableName.Schema, Is.EqualTo(expectedSchema));
+        Assert.That(tableName.Name, Is.EqualTo(expectedTable));
+        Assert.That(tableName.QualifiedName, Is.EqualTo($"[{expectedSchema}].[{expectedTable}]"));
+    }
+
+    [Test]
+    public void ParsesNameWithoutSchemaAssumingDboAsDefault()
+    {
+        var table = TableName.Parse("TableName");
+
+        Assert.That(table.Name, Is.EqualTo("TableName"));
+        Assert.That(table.Schema, Is.EqualTo("dbo"));
+        Assert.That(table.QualifiedName, Is.EqualTo("[dbo].[TableName]"));
+    }
+
+    [Test]
+    public void ParsesBracketsNameWithoutSchemaAssumingDboAsDefault()
+    {
+        var table = TableName.Parse("[TableName]");
+
+        Assert.That(table.Name, Is.EqualTo("TableName"));
+        Assert.That(table.Schema, Is.EqualTo("dbo"));
+        Assert.That(table.QualifiedName, Is.EqualTo("[dbo].[TableName]"));
+    }
+
+    [Test]
+    public void ParsesNameWithSingleDotAsSchema()
+    {
+        var table = TableName.Parse("schema.TableName");
+
+        Assert.That(table.Name, Is.EqualTo("TableName"));
+        Assert.That(table.Schema, Is.EqualTo("schema"));
+        Assert.That(table.QualifiedName, Is.EqualTo("[schema].[TableName]"));
+    }
+
+    [Test]
+    public void ParsesNameWithMultipleDotsAsTableName()
+    {
+        var table = TableName.Parse("notschema.alsonotschema.TableName");
+
+        Assert.That(table.Name, Is.EqualTo("notschema.alsonotschema.TableName"));
+        Assert.That(table.Schema, Is.EqualTo("dbo"));
+        Assert.That(table.QualifiedName, Is.EqualTo("[dbo].[notschema.alsonotschema.TableName]"));
+    }
+
+    [Test]
+    public void ParsesBracketsNameWithSchema()
+    {
+        var table = TableName.Parse("[schema].[TableName]");
+
+        Assert.That(table.Name, Is.EqualTo("TableName"));
+        Assert.That(table.Schema, Is.EqualTo("schema"));
+        Assert.That(table.QualifiedName, Is.EqualTo("[schema].[TableName]"));
     }
 }
