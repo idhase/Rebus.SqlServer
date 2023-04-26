@@ -493,7 +493,7 @@ VALUES
         command.Parameters.Add("ttltotalseconds", SqlDbType.Int).Value = (int)ttl.TotalSeconds;
         command.Parameters.Add("ttlmilliseconds", SqlDbType.Int).Value = ttl.Milliseconds;
 
-        await myLock.WaitAsync(TimeSpan.FromSeconds(5));
+        await myLock.WaitAsync();
         try
         {
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
