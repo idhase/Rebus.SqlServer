@@ -76,6 +76,10 @@ public class TestNumberOfSqlConnections : FixtureBase
                 _activeConnections[id] = new object();
             }
 
+            public SqlConnection Connection => _innerConnection.Connection;
+
+            public SqlTransaction Transaction => _innerConnection.Transaction;
+
             public SqlCommand CreateCommand()
             {
                 return _innerConnection.CreateCommand();

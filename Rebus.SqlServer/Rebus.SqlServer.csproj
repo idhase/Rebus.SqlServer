@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 	<PropertyGroup>
 		<OutputType>Library</OutputType>
-		<TargetFramework>netstandard2.0</TargetFramework>
+		<TargetFrameworks>netstandard2.0;net6.0</TargetFrameworks>
 		<LangVersion>10</LangVersion>
 		<RootNamespace>Rebus</RootNamespace>
 		<AssemblyName>Rebus.SqlServer</AssemblyName>
@@ -12,9 +12,18 @@
 		<Copyright>Copyright Rebus FM ApS 2012</Copyright>
 		<PackageTags>rebus queue messaging service bus sql-server sqlserver mssql sql</PackageTags>
 		<PackageIcon>little_rebusbus2_copy-500x500.png</PackageIcon>
-		<RepositoryUrl>https://github.com/rebus-org/Rebus.SqlServer</RepositoryUrl>
-		<RepositoryType>git</RepositoryType>
 		<GenerateDocumentationFile>True</GenerateDocumentationFile>
+		<RepositoryUrl>https://github.com/idhase/Rebus.SqlServer.git</RepositoryUrl>
+		<RepositoryType>git</RepositoryType>
+		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+		<LangVersion>latest</LangVersion>
+		<PublishRepositoryUrl>true</PublishRepositoryUrl>
+		<EmbedUntrackedSources>true</EmbedUntrackedSources>
+		<IncludeSymbols>true</IncludeSymbols>
+		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
+		<PackageId>Idha.Rebus.SqlServer</PackageId>
+		<Version>1.0.6-beta002</Version>
+		<AssemblyVersion>1.0.6.2002</AssemblyVersion>
 	</PropertyGroup>
 	<ItemGroup>
 		<PackageReference Include="microsoft.data.sqlclient" Version="4.1.0" />

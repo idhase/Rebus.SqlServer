@@ -118,6 +118,11 @@ public class TableName : IEquatable<TableName>
             return new TableName(parts[0], parts[1]);
         }
 
+        if (parts.Length == 3)
+        {
+            return new TableName(parts[1], parts[2], parts[0]);
+        }
+
         throw new ArgumentException(
             $"The table name '{name}' cannot be used because it contained multiple '.' characters - if you intend to use '.' as part of a table name, please be sure to enclose the name in brackets, e.g. like this: '[Table name with spaces and .s]'");
     }
