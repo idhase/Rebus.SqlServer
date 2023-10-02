@@ -123,11 +123,12 @@
 * Make it possible to disable native message defer functionality of SQL transport, thus making it possible to run a dedicated SQL timeout manager (like with any other transport) together with the SQL transport
 * Migrate old receive index to new, improved index - thanks [Simplicitdk]
 
-## 7.3.0-b5
+## 7.3.0
 * Add outbox 🙂
 * Fix transport table name parser to work like SSMS, except for the case where a name consists of more than two .-delimited parts (e.g. like `CompanyName.ProjectName.ServiceName`) – in that case, the name is interpreted as a table name with default schema, i.e. corresponding to `[dbo].[CompanyName.ProjectName.ServiceName]`
 
-
+## 7.3.1
+* Optimize saga updates by skipping update of the index table when the saga data hasn't changed
 
 ----
 
