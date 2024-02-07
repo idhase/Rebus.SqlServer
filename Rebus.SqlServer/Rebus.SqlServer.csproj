@@ -22,8 +22,8 @@
 		<IncludeSymbols>true</IncludeSymbols>
 		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
 		<PackageId>Idha.Rebus.SqlServer</PackageId>
-		<Version>1.0.7-beta003</Version>
-		<AssemblyVersion>1.0.7.2003</AssemblyVersion>
+		<Version>1.0.7</Version>
+		<AssemblyVersion>1.0.7</AssemblyVersion>
 	</PropertyGroup>
 	<ItemGroup>
 		<PackageReference Include="microsoft.data.sqlclient" Version="5.1.5" />
