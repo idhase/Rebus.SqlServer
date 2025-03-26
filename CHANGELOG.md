@@ -148,11 +148,27 @@
 ## 8.1.1
 * Fix yet another saga-persister-header-correlation scenario
 
+## 8.1.2
+* Fix bug that would result in sending outgoing outbox messages sent from a failing 1st level handler IF the 2nd level handler completed successfully
+
+## 8.2.0
+* Update Microsoft.Data.SqlClient dependency to 5.2.2
+* Add readme to NuGet package
+* Add section about outbox to readme - thanks [jeroenkoknl]
+
+## 8.3.0
+* Reduce SQL Server query plan cache pollution - thanks [blundell89]
+
+## 8.4.0-b01
+* Remove requirement for enabling MARS (which will also no longer automatically be enabled)
+
 ----
 
+[blundell89]: https://github.com/blundell89
 [clegendre]: https://github.com/clegendre
 [cleytonb]: https://github.com/cleytonb
 [IsaacSee]: https://github.com/IsaacSee
+[jeroenkoknl]: https://github.com/jeroenkoknl
 [larsw]: https://github.com/larsw
 [magnus-tretton37]: https://github.com/magnus-tretton37
 [mathiasnohall]: https://github.com/mathiasnohall

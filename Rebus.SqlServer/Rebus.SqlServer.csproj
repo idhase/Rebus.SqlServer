@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 	<PropertyGroup>
 		<OutputType>Library</OutputType>
-		<TargetFrameworks>netstandard2.0;net6.0</TargetFrameworks>
-		<LangVersion>11</LangVersion>
+		<TargetFramework>netstandard2.0</TargetFramework>
+		<LangVersion>13</LangVersion>
 		<RootNamespace>Rebus</RootNamespace>
 		<AssemblyName>Rebus.SqlServer</AssemblyName>
 		<Authors>mookid8000</Authors>
@@ -24,15 +24,20 @@
 		<PackageId>Idha.Rebus.SqlServer</PackageId>
 		<Version>1.0.8</Version>
 		<AssemblyVersion>1.0.8</AssemblyVersion>
+		<PackageReadmeFile>README.md</PackageReadmeFile>
 	</PropertyGroup>
 	<ItemGroup>
-		<PackageReference Include="microsoft.data.sqlclient" Version="5.1.5" />
-		<PackageReference Include="rebus" Version="8.2.2" />
+		<PackageReference Include="microsoft.data.sqlclient" Version="5.2.2" />
+		<PackageReference Include="rebus" Version="8.4.2" />
 	</ItemGroup>
 	<ItemGroup>
 		<None Include="..\artwork\little_rebusbus2_copy-500x500.png">
 			<Pack>True</Pack>
 			<PackagePath></PackagePath>
+		</None>
+		<None Include="..\README.md">
+			<Pack>True</Pack>
+			<PackagePath>\</PackagePath>
 		</None>
 	</ItemGroup>
 </Project>
