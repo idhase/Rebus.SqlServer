@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -16,21 +17,23 @@ namespace Rebus.SqlServer.Timeouts;
 /// </summary>
 public class SqlServerTimeoutManager : ITimeoutManager
 {
-    static readonly HeaderSerializer HeaderSerializer = new HeaderSerializer();
-    readonly IDbConnectionProvider _connectionProvider;
-    private readonly IRebusTime _rebusTime;
+    static readonly HeaderSerializer HeaderSerializer = new();
+    readonly IDbConnectionProvider _sendConnectionProvider;
+    readonly IDbConnectionProvider _getDueMessagesConnectionProvider;
+    readonly IRebusTime _rebusTime;
     readonly TableName _tableName;
     readonly ILog _log;
 
     /// <summary>
     /// Constructs the timeout manager, using the specified connection provider and table to store the messages until they're due.
     /// </summary>
-    public SqlServerTimeoutManager(IDbConnectionProvider connectionProvider, string tableName, IRebusLoggerFactory rebusLoggerFactory, IRebusTime rebusTime)
+    public SqlServerTimeoutManager(IDbConnectionProvider sendConnectionProvider, IDbConnectionProvider getDueMessagesConnectionProvider, string tableName, IRebusLoggerFactory rebusLoggerFactory, IRebusTime rebusTime)
     {
         if (tableName == null) throw new ArgumentNullException(nameof(tableName));
         if (rebusLoggerFactory == null) throw new ArgumentNullException(nameof(rebusLoggerFactory));
 
-        _connectionProvider = connectionProvider ?? throw new ArgumentNullException(nameof(connectionProvider));
+        _sendConnectionProvider = sendConnectionProvider ?? throw new ArgumentNullException(nameof(sendConnectionProvider));
+        _getDueMessagesConnectionProvider = getDueMessagesConnectionProvider ?? throw new ArgumentNullException(nameof(getDueMessagesConnectionProvider));
         _rebusTime = rebusTime ?? throw new ArgumentNullException(nameof(rebusTime));
 
         _tableName = TableName.Parse(tableName);
@@ -55,9 +58,9 @@ public class SqlServerTimeoutManager : ITimeoutManager
 
     async Task EnsureTableIsCreatedAsync()
     {
-        using var connection = await _connectionProvider.GetConnection();
+        using var connection = await _getDueMessagesConnectionProvider.GetConnection();
         using var _ = await ConnectionLocker.Instance.GetLockAsync(connection);
-        
+
         var tableNames = connection.GetTableNames();
 
         if (tableNames.Contains(_tableName))
@@ -75,9 +78,7 @@ IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = '{_tableName.Schema}')
 
 ----
 
-IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{_tableName.Schema}' AND TABLE_NAME = '{
-    _tableName.Name
-}')
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{_tableName.Schema}' AND TABLE_NAME = '{_tableName.Name}')
     CREATE TABLE {_tableName.QualifiedName} (
         [id] [bigint] IDENTITY(1,1) NOT NULL,
 	    [due_time] [datetimeoffset](7) NOT NULL,
@@ -115,9 +116,9 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_{_tableName.Schema}_{_
     {
         var headersString = HeaderSerializer.SerializeToString(headers);
 
-        using var connection = await _connectionProvider.GetConnection();
+        using var connection = await _sendConnectionProvider.GetConnection();
         using var _ = await ConnectionLocker.Instance.GetLockAsync(connection);
-        
+
         using (var command = connection.CreateCommand())
         {
             command.CommandText = $@"INSERT INTO {_tableName.QualifiedName} ([due_time], [headers], [body]) VALUES (@due_time, @headers, @body)";
@@ -137,17 +138,30 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_{_tableName.Schema}_{_
     /// </summary>
     public async Task<DueMessagesResult> GetDueMessages()
     {
-        var connection = await _connectionProvider.GetConnection();
-        var connectionLock = await ConnectionLocker.Instance.GetLockAsync(connection);
+        var disposables = new ConcurrentStack<IDisposable>();
+
+        void CleanUpDisposables()
+        {
+            while (disposables.TryPop(out var disposable))
+            {
+                disposable.Dispose();
+            }
+        }
 
         try
         {
+            var connection = await _getDueMessagesConnectionProvider.GetConnection();
+            disposables.Push(connection);
+
+            var connectionLock = await ConnectionLocker.Instance.GetLockAsync(connection);
+            disposables.Push(connectionLock);
+
             var dueMessages = new List<DueMessage>();
 
-            const int maxDueTimeouts = 1000;
+            const int maxDueTimeouts = 100;
 
             using var command = connection.CreateCommand();
-            
+
             command.CommandText =
                 $@"
 SELECT 
@@ -172,12 +186,10 @@ ORDER BY [due_time] ASC
 
                     var sqlTimeout = new DueMessage(headers, body, async () =>
                     {
-                        using (var deleteCommand = connection.CreateCommand())
-                        {
-                            deleteCommand.CommandText = $"DELETE FROM {_tableName.QualifiedName} WHERE [id] = @id";
-                            deleteCommand.Parameters.Add("id", SqlDbType.BigInt).Value = id;
-                            await deleteCommand.ExecuteNonQueryAsync().ConfigureAwait(false);
-                        }
+                        using var deleteCommand = connection.CreateCommand();
+                        deleteCommand.CommandText = $"DELETE FROM {_tableName.QualifiedName} WHERE [id] = @id";
+                        deleteCommand.Parameters.Add("id", SqlDbType.BigInt).Value = id;
+                        await deleteCommand.ExecuteNonQueryAsync().ConfigureAwait(false);
                     });
 
                     dueMessages.Add(sqlTimeout);
@@ -188,17 +200,24 @@ ORDER BY [due_time] ASC
 
             return new DueMessagesResult(dueMessages, async () =>
             {
-                using (connectionLock)
-                using (connection)
+                try
                 {
                     await connection.Complete();
                 }
+                finally
+                {
+                    CleanUpDisposables();
+                }
             });
+        }
+        catch (OperationCanceledException)
+        {
+            CleanUpDisposables();
+            return DueMessagesResult.Empty;
         }
         catch (Exception)
         {
-            connection.Dispose();
-            connectionLock.Dispose();
+            CleanUpDisposables();
             throw;
         }
     }

@@ -159,8 +159,13 @@
 ## 8.3.0
 * Reduce SQL Server query plan cache pollution - thanks [blundell89]
 
-## 8.4.0-b01
+## 8.4.0
 * Remove requirement for enabling MARS (which will also no longer automatically be enabled)
+* Ensure that the timeout manager always uses a transaction when querying for due timeouts
+
+## 8.4.1
+* Improve handling of dues timeouts in high-load scenarios
+
 
 ----
 
