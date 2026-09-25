@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Text.RegularExpressions;
 using NUnit.Framework;
+using NUnit.Framework.Legacy;
 
 namespace Rebus.SqlServer.Tests.Assumptions;
 
@@ -65,10 +66,10 @@ public class TestTableName
         {
             var table = TableName.Parse("TableName");
 
-            Assert.AreEqual(table.Name, "TableName");
-            Assert.AreEqual(table.Schema, "dbo");
-            Assert.IsNull(table.Catalog);
-            Assert.AreEqual(table.QualifiedName, "[dbo].[TableName]");
+            ClassicAssert.AreEqual(table.Name, "TableName");
+            ClassicAssert.AreEqual(table.Schema, "dbo");
+            ClassicAssert.IsNull(table.Catalog);
+            ClassicAssert.AreEqual(table.QualifiedName, "[dbo].[TableName]");
         }
 
         [Test]
@@ -76,10 +77,10 @@ public class TestTableName
         {
             var table = TableName.Parse("[TableName]");
 
-            Assert.AreEqual(table.Name, "TableName");
-            Assert.AreEqual(table.Schema, "dbo");
-            Assert.IsNull(table.Catalog);
-            Assert.AreEqual(table.QualifiedName, "[dbo].[TableName]");
+            ClassicAssert.AreEqual(table.Name, "TableName");
+            ClassicAssert.AreEqual(table.Schema, "dbo");
+            ClassicAssert.IsNull(table.Catalog);
+            ClassicAssert.AreEqual(table.QualifiedName, "[dbo].[TableName]");
         }
 
         [Test]
@@ -87,10 +88,10 @@ public class TestTableName
         {
             var table = TableName.Parse("schema.TableName");
 
-            Assert.AreEqual(table.Name, "TableName");
-            Assert.AreEqual(table.Schema, "schema");
-            Assert.IsNull(table.Catalog);
-            Assert.AreEqual(table.QualifiedName, "[schema].[TableName]");
+            ClassicAssert.AreEqual(table.Name, "TableName");
+            ClassicAssert.AreEqual(table.Schema, "schema");
+            ClassicAssert.IsNull(table.Catalog);
+            ClassicAssert.AreEqual(table.QualifiedName, "[schema].[TableName]");
         }
 
         [Test]
@@ -98,10 +99,10 @@ public class TestTableName
         {
             var table = TableName.Parse("[schema].[TableName]");
 
-            Assert.AreEqual(table.Name, "TableName");
-            Assert.AreEqual(table.Schema, "schema");
-            Assert.IsNull(table.Catalog);
-            Assert.AreEqual(table.QualifiedName, "[schema].[TableName]");
+            ClassicAssert.AreEqual(table.Name, "TableName");
+            ClassicAssert.AreEqual(table.Schema, "schema");
+            ClassicAssert.IsNull(table.Catalog);
+            ClassicAssert.AreEqual(table.QualifiedName, "[schema].[TableName]");
         }
 
         [Test]
@@ -109,10 +110,10 @@ public class TestTableName
         {
             var table = TableName.Parse("catalog.schema.TableName");
 
-            Assert.AreEqual(table.Name, "TableName");
-            Assert.AreEqual(table.Schema, "schema");
-            Assert.AreEqual(table.Catalog, "catalog");
-            Assert.AreEqual(table.QualifiedName, "[catalog].[schema].[TableName]");
+            ClassicAssert.AreEqual(table.Name, "TableName");
+            ClassicAssert.AreEqual(table.Schema, "schema");
+            ClassicAssert.AreEqual(table.Catalog, "catalog");
+            ClassicAssert.AreEqual(table.QualifiedName, "[catalog].[schema].[TableName]");
         }
 
         [Test]
@@ -120,10 +121,10 @@ public class TestTableName
         {
             var table = TableName.Parse("[catalog].[schema].[TableName]");
 
-            Assert.AreEqual(table.Name, "TableName");
-            Assert.AreEqual(table.Schema, "schema");
-            Assert.AreEqual(table.Catalog, "catalog");
-            Assert.AreEqual(table.QualifiedName, "[catalog].[schema].[TableName]");
+            ClassicAssert.AreEqual(table.Name, "TableName");
+            ClassicAssert.AreEqual(table.Schema, "schema");
+            ClassicAssert.AreEqual(table.Catalog, "catalog");
+            ClassicAssert.AreEqual(table.QualifiedName, "[catalog].[schema].[TableName]");
         }
     
 
