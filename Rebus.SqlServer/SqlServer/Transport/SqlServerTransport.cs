@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using Microsoft.Data.SqlClient;
@@ -41,6 +42,12 @@ public class SqlServerTransport : ITransport, IInitializable, IDisposable
     /// in a connection provider which is then in turn used in repositories and such. This way, "exactly once delivery" can actually be had.
     /// </summary>
     public const string CurrentConnectionKey = "sql-server-transport-current-connection";
+
+    // Same key and queue type as AbstractRebusTransport.OutgoingMessagesKey (which is internal), because Rebus' retry step clears
+    // the queue stored under this key before dispatching a message as a 2nd level retry, thus discarding the failed attempt's messages
+    const string OutgoingMessagesKey = "outgoing-messages";
+
+    const string OutgoingMessagesSentKey = "sql-server-transport-outgoing-messages-sent";
 
     /// <summary>
     /// Default delay between executing the background cleanup task
@@ -325,6 +332,7 @@ IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{tableN
 
     /// <summary>
     /// Sends the given transport message to the specified destination queue address by adding it to the queue's table.
+    /// The message is added when the transaction context commits, using the same connection and transaction as the receive operation.
     /// </summary>
     public virtual async Task Send(string destinationAddress, TransportMessage message, ITransactionContext context)
     {
@@ -332,11 +340,39 @@ IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{tableN
 
         var destinationAddressToUse = GetDestinationAddressToUse(destinationAddress, message);
 
+        // messages sent after the outgoing messages were sent (e.g. from OnCommit/OnAck callbacks) cannot be queued, because the queue will not be sent again
+        if (context.Items.ContainsKey(OutgoingMessagesSentKey))
+        {
+            using var _ = await ConnectionLocker.Instance.GetLockAsync(connection);
+
+            await SendOrThrow(destinationAddressToUse, message, connection).ConfigureAwait(false);
+            return;
+        }
+
+        var outgoingMessages = context.GetOrAdd(OutgoingMessagesKey, () => new ConcurrentQueue<OutgoingTransportMessage>());
+
+        outgoingMessages.Enqueue(new OutgoingTransportMessage(message, destinationAddressToUse));
+    }
+
+    async Task SendOutgoingMessages(ITransactionContext context, IDbConnection connection)
+    {
+        context.Items[OutgoingMessagesSentKey] = true;
+
+        if (!context.Items.TryGetValue(OutgoingMessagesKey, out var value) || value is not ConcurrentQueue<OutgoingTransportMessage> outgoingMessages) return;
+
         using var _ = await ConnectionLocker.Instance.GetLockAsync(connection);
 
+        while (outgoingMessages.TryDequeue(out var outgoingMessage))
+        {
+            await SendOrThrow(outgoingMessage.DestinationAddress, outgoingMessage.TransportMessage, connection).ConfigureAwait(false);
+        }
+    }
+
+    async Task SendOrThrow(string destinationAddress, TransportMessage message, IDbConnection connection)
+    {
         try
         {
-            await InnerSendAsync(destinationAddressToUse, message, connection).ConfigureAwait(false);
+            await InnerSendAsync(destinationAddress, message, connection).ConfigureAwait(false);
         }
         catch (Exception e)
         {
@@ -610,6 +646,8 @@ DELETE FROM TopCTE
                 {
                     var dbConnection = await ConnectionProvider.GetConnection();
 
+                    // registered here, as early as possible, so the outgoing messages are sent before any OnCommit callbacks registered later
+                    context.OnCommit(async _ => await SendOutgoingMessages(context, dbConnection));
                     context.OnAck(async _ => await dbConnection.Complete());
                     context.OnDisposed(_ => dbConnection.Dispose());
 

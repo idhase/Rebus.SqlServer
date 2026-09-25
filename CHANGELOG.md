@@ -167,6 +167,9 @@
 * Improve handling of dues timeouts in high-load scenarios
 
 
+## Idha.Rebus.SqlServer 1.0.9
+* Fix SQL transport sending the outgoing messages of a failed handler attempt when the message is dispatched as a 2nd level retry. Outgoing messages are now queued and sent when the transaction context commits, still in the receive's SQL transaction, so Rebus can discard them
+
 ----
 
 [blundell89]: https://github.com/blundell89
