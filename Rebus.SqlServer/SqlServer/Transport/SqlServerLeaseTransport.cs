@@ -24,6 +24,7 @@ public class SqlServerLeaseTransport : SqlServerTransport
     /// <summary>
     /// Key for storing the outbound message buffer when performing <seealso cref="Send"/>
     /// </summary>
+    [Obsolete("No longer used. Outgoing messages are buffered under Rebus' \"outgoing-messages\" key, so they can be discarded when a message is dispatched as a 2nd level retry")]
     public const string OutboundMessageBufferKey = "sql-server-transport-leased-outbound-message-buffer";
 
     /// <summary>
@@ -100,13 +101,7 @@ public class SqlServerLeaseTransport : SqlServerTransport
     {
         var outboundMessageBuffer = GetOutboundMessageBuffer(context);
 
-        outboundMessageBuffer.Enqueue(
-            new AddressedTransportMessage
-            {
-                DestinationAddress = GetDestinationAddressToUse(destinationAddress, message),
-                Message = message
-            }
-        );
+        outboundMessageBuffer.Enqueue(new OutgoingTransportMessage(message, GetDestinationAddressToUse(destinationAddress, message)));
 
         return CompletedResult;
     }
@@ -339,11 +334,11 @@ WHERE	id = @id
     /// Gets the outbound message buffer for sending of messages
     /// </summary>
     /// <param name="context">Transaction context containing the message bufffer</param>
-    ConcurrentQueue<AddressedTransportMessage> GetOutboundMessageBuffer(ITransactionContext context)
+    ConcurrentQueue<OutgoingTransportMessage> GetOutboundMessageBuffer(ITransactionContext context)
     {
-        return context.GetOrAdd(OutboundMessageBufferKey, () =>
+        return context.GetOrAdd(OutgoingMessagesKey, () =>
             {
-                var outgoingMessages = new ConcurrentQueue<AddressedTransportMessage>();
+                var outgoingMessages = new ConcurrentQueue<OutgoingTransportMessage>();
 
                 async Task SendOutgoingMessages(ITransactionContext _)
                 {
@@ -357,7 +352,7 @@ WHERE	id = @id
                             break;
                         }
 
-                        await InnerSendAsync(addressed.DestinationAddress, addressed.Message, connection);
+                        await InnerSendAsync(addressed.DestinationAddress, addressed.TransportMessage, connection);
                     }
 
                     await connection.Complete();
@@ -461,11 +456,5 @@ WHERE	id = @id
                 _serverLeaseTransport.Log.Error(ex, "While Renewing Lease");
             }
         }
-    }
-
-    class AddressedTransportMessage
-    {
-        public string DestinationAddress { get; set; }
-        public TransportMessage Message { get; set; }
     }
 }

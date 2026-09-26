@@ -45,7 +45,7 @@ public class SqlServerTransport : ITransport, IInitializable, IDisposable
 
     // Same key and queue type as AbstractRebusTransport.OutgoingMessagesKey (which is internal), because Rebus' retry step clears
     // the queue stored under this key before dispatching a message as a 2nd level retry, thus discarding the failed attempt's messages
-    const string OutgoingMessagesKey = "outgoing-messages";
+    private protected const string OutgoingMessagesKey = "outgoing-messages";
 
     const string OutgoingMessagesSentKey = "sql-server-transport-outgoing-messages-sent";
 

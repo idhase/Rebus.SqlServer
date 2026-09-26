@@ -169,6 +169,8 @@
 
 ## Idha.Rebus.SqlServer 1.0.9
 * Fix SQL transport sending the outgoing messages of a failed handler attempt when the message is dispatched as a 2nd level retry. Outgoing messages are now queued and sent when the transaction context commits, still in the receive's SQL transaction, so Rebus can discard them
+* Same fix for the lease-based SQL transport, whose outgoing messages are now buffered under Rebus' "outgoing-messages" key. `SqlServerLeaseTransport.OutboundMessageBufferKey` is no longer used and is marked obsolete
+* Includes upstream changes: Rebus 8.9.0, Microsoft.Data.SqlClient 6.1.2, and the protected `SqlServerTransport.InnerSend` method renamed to `InnerSendAsync`
 
 ----
 

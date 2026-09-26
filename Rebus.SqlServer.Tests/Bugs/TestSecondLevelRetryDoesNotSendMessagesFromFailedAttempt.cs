@@ -18,65 +18,10 @@ using Rebus.Transport;
 namespace Rebus.SqlServer.Tests.Bugs;
 
 [TestFixture, Category(Categories.SqlServer)]
-[Description(@"When a handler attempt ends on the 2nd level retry path, Rebus clears the transport's outgoing messages and then commits AND acks.
-The messages sent by the failed attempt must not be delivered, whereas the messages sent by the IFailed<T> handler must be.")]
-public class TestSecondLevelRetryDoesNotSendMessagesFromFailedAttempt : FixtureBase
+public class TestSecondLevelRetryDoesNotSendMessagesFromFailedAttempt : SecondLevelRetryOutgoingMessagesFixtureBase
 {
-    static readonly TimeSpan ProbeDeferral = TimeSpan.FromMilliseconds(300);
-
-    string _queueName;
-    string _subscriptionsTableName;
-
-    protected override void SetUp()
-    {
-        base.SetUp();
-
-        _queueName = TestConfig.GetName("slr-input");
-        _subscriptionsTableName = TestConfig.GetName("slr-subscriptions");
-
-        SqlTestHelper.DropTable(_queueName);
-        SqlTestHelper.DropTable(_subscriptionsTableName);
-
-        Using(new DisposableCallback(() => SqlTestHelper.DropTable(_queueName)));
-        Using(new DisposableCallback(() => SqlTestHelper.DropTable(_subscriptionsTableName)));
-    }
-
-    public enum SendKind { Send, SendLocal, DeferLocal, Publish }
-
-    [TestCase(SendKind.Send, 1, 1)]
-    [TestCase(SendKind.SendLocal, 1, 1)]
-    [TestCase(SendKind.DeferLocal, 1, 1)]
-    [TestCase(SendKind.Publish, 1, 1)]
-    [TestCase(SendKind.DeferLocal, 5, 5)]
-    public async Task MessagesFromAttemptThatEndsOnSecondLevelPathAreNotDelivered(SendKind kind, int maxDeliveryAttempts, int failures)
-    {
-        await RunScenario(kind, maxDeliveryAttempts, failures, attempt => new InvalidOperationException($"attempt {attempt} fails"),
-            expectedProbes: [$"{kind}:{failures + 1}", "failed-handler"]);
-    }
-
-    [TestCase(SendKind.Send)]
-    [TestCase(SendKind.SendLocal)]
-    [TestCase(SendKind.DeferLocal)]
-    [TestCase(SendKind.Publish)]
-    public async Task MessagesFromAttemptThatFailsFastIntoSecondLevelAreNotDelivered(SendKind kind)
-    {
-        await RunScenario(kind, maxDeliveryAttempts: 5, failures: 1, attempt => new FailFastException($"attempt {attempt} fails fast"),
-            expectedProbes: [$"{kind}:2", "failed-handler"]);
-    }
-
-    [Test]
-    public async Task FirstLevelFailureStillRollsBackMessagesFromFailedAttempt()
-    {
-        await RunScenario(SendKind.DeferLocal, maxDeliveryAttempts: 5, failures: 1, attempt => new InvalidOperationException($"attempt {attempt} fails"),
-            expectedProbes: ["DeferLocal:2"]);
-    }
-
-    [Test]
-    public async Task MessagesFromSuccessfulHandlerAreDelivered()
-    {
-        await RunScenario(SendKind.Send, maxDeliveryAttempts: 5, failures: 0, _ => new InvalidOperationException("never thrown"),
-            expectedProbes: ["Send:1"]);
-    }
+    protected override void ConfigureTransport(StandardConfigurer<ITransport> configurer, string queueName) =>
+        configurer.UseSqlServer(new SqlServerTransportOptions(SqlTestHelper.ConnectionString), queueName);
 
     [Test]
     [Description("Sends must be written in the receive's SQL transaction: if that transaction does not commit, neither the receive nor the sends may take effect")]
@@ -141,6 +86,74 @@ public class TestSecondLevelRetryDoesNotSendMessagesFromFailedAttempt : FixtureB
         await WaitForProbes(probes, expectedProbes.Length);
 
         Assert.That(probes, Is.EquivalentTo(expectedProbes));
+    }
+}
+
+[TestFixture, Category(Categories.SqlServer)]
+public class TestSecondLevelRetryDoesNotSendMessagesFromFailedAttempt_LeaseTransport : SecondLevelRetryOutgoingMessagesFixtureBase
+{
+    protected override void ConfigureTransport(StandardConfigurer<ITransport> configurer, string queueName) =>
+        configurer.UseSqlServerInLeaseMode(new SqlServerLeaseTransportOptions(SqlTestHelper.ConnectionString), queueName);
+}
+
+[Description(@"When a handler attempt ends on the 2nd level retry path, Rebus clears the transport's outgoing messages and then commits AND acks.
+The messages sent by the failed attempt must not be delivered, whereas the messages sent by the IFailed<T> handler must be.")]
+public abstract class SecondLevelRetryOutgoingMessagesFixtureBase : FixtureBase
+{
+    protected static readonly TimeSpan ProbeDeferral = TimeSpan.FromMilliseconds(300);
+
+    string _queueName;
+    string _subscriptionsTableName;
+
+    protected override void SetUp()
+    {
+        base.SetUp();
+
+        _queueName = TestConfig.GetName("slr-input");
+        _subscriptionsTableName = TestConfig.GetName("slr-subscriptions");
+
+        SqlTestHelper.DropTable(_queueName);
+        SqlTestHelper.DropTable(_subscriptionsTableName);
+
+        Using(new DisposableCallback(() => SqlTestHelper.DropTable(_queueName)));
+        Using(new DisposableCallback(() => SqlTestHelper.DropTable(_subscriptionsTableName)));
+    }
+
+    public enum SendKind { Send, SendLocal, DeferLocal, Publish }
+
+    [TestCase(SendKind.Send, 1, 1)]
+    [TestCase(SendKind.SendLocal, 1, 1)]
+    [TestCase(SendKind.DeferLocal, 1, 1)]
+    [TestCase(SendKind.Publish, 1, 1)]
+    [TestCase(SendKind.DeferLocal, 5, 5)]
+    public async Task MessagesFromAttemptThatEndsOnSecondLevelPathAreNotDelivered(SendKind kind, int maxDeliveryAttempts, int failures)
+    {
+        await RunScenario(kind, maxDeliveryAttempts, failures, attempt => new InvalidOperationException($"attempt {attempt} fails"),
+            expectedProbes: [$"{kind}:{failures + 1}", "failed-handler"]);
+    }
+
+    [TestCase(SendKind.Send)]
+    [TestCase(SendKind.SendLocal)]
+    [TestCase(SendKind.DeferLocal)]
+    [TestCase(SendKind.Publish)]
+    public async Task MessagesFromAttemptThatFailsFastIntoSecondLevelAreNotDelivered(SendKind kind)
+    {
+        await RunScenario(kind, maxDeliveryAttempts: 5, failures: 1, attempt => new FailFastException($"attempt {attempt} fails fast"),
+            expectedProbes: [$"{kind}:2", "failed-handler"]);
+    }
+
+    [Test]
+    public async Task FirstLevelFailureStillRollsBackMessagesFromFailedAttempt()
+    {
+        await RunScenario(SendKind.DeferLocal, maxDeliveryAttempts: 5, failures: 1, attempt => new InvalidOperationException($"attempt {attempt} fails"),
+            expectedProbes: ["DeferLocal:2"]);
+    }
+
+    [Test]
+    public async Task MessagesFromSuccessfulHandlerAreDelivered()
+    {
+        await RunScenario(SendKind.Send, maxDeliveryAttempts: 5, failures: 0, _ => new InvalidOperationException("never thrown"),
+            expectedProbes: ["Send:1"]);
     }
 
     [Test]
@@ -221,10 +234,12 @@ public class TestSecondLevelRetryDoesNotSendMessagesFromFailedAttempt : FixtureB
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
     };
 
-    void ConfigureBus(BuiltinHandlerActivator activator, int maxDeliveryAttempts)
+    protected abstract void ConfigureTransport(StandardConfigurer<ITransport> configurer, string queueName);
+
+    protected void ConfigureBus(BuiltinHandlerActivator activator, int maxDeliveryAttempts)
     {
         Configure.With(activator)
-            .Transport(t => t.UseSqlServer(new SqlServerTransportOptions(SqlTestHelper.ConnectionString), _queueName))
+            .Transport(t => ConfigureTransport(t, _queueName))
             .Subscriptions(s => s.StoreInSqlServer(SqlTestHelper.ConnectionString, _subscriptionsTableName, isCentralized: true))
             .Routing(r => r.TypeBased().Map<Probe>(_queueName))
             .Options(o =>
@@ -237,7 +252,7 @@ public class TestSecondLevelRetryDoesNotSendMessagesFromFailedAttempt : FixtureB
     }
 
     // waits for the expected number of probes, then a little longer to give leaked (possibly deferred) probes a chance to show up
-    static async Task WaitForProbes(ConcurrentQueue<string> probes, int expectedCount)
+    protected static async Task WaitForProbes(ConcurrentQueue<string> probes, int expectedCount)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
@@ -249,7 +264,7 @@ public class TestSecondLevelRetryDoesNotSendMessagesFromFailedAttempt : FixtureB
         await Task.Delay(ProbeDeferral + TimeSpan.FromSeconds(2));
     }
 
-    record Work;
+    protected record Work;
 
-    record Probe(string Id);
+    protected record Probe(string Id);
 }
