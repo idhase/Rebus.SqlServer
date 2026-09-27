@@ -486,8 +486,6 @@ IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{tableN
         throw new InvalidOperationException($"Attempted to defer message, but no '{Headers.DeferredRecipient}' header was on the message");
     }
 
-    private readonly SemaphoreSlim myLock = new SemaphoreSlim(1, 1);
-
     /// <summary>
     /// Performs persistence of a message to the underlying table
     /// </summary>
@@ -535,15 +533,7 @@ VALUES
         command.Parameters.Add("ttltotalseconds", SqlDbType.Int).Value = (int)ttl.TotalSeconds;
         command.Parameters.Add("ttlmilliseconds", SqlDbType.Int).Value = ttl.Milliseconds;
 
-        await myLock.WaitAsync();
-        try
-        {
-            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
-        }
-        finally
-        {
-            myLock.Release();
-        }
+        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
     TimeSpan GetInitialVisibilityDelay(IDictionary<string, string> headers)
