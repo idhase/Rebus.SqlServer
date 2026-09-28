@@ -174,6 +174,7 @@
 * Create the receive index as `[priority] DESC, [visible], [id], [expiration]` like upstream, matching the receive query. The fork had gone back to the older `[priority], [visible], [expiration], [id]` layout. Only affects new queue tables, existing ones keep their index until it is recreated
 * `new TableName(schema, tableName, catalog)` now names `catalog` in the exception when it is null
 * Insert the messages sent from a handler with one multi-row INSERT per destination table and chunk of up to 32 messages, instead of one INSERT per message. Chunks are powers of two to keep the number of cached query plans small. Also used by the lease-based transport
+* Give each connection its own lock. The lock was one of 256 shared by hash, so unrelated connections could wait for each other, and sending due messages from `SqlServerTimeoutManager` could stall for 30 seconds and fail when a send's connection shared the timeout manager's lock
 * Includes upstream changes: Rebus 8.9.0, Microsoft.Data.SqlClient 6.1.2, and the protected `SqlServerTransport.InnerSend` method renamed to `InnerSendAsync`
 
 ----
