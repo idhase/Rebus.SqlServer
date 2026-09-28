@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Data;
 using System.Threading;
 using System.Threading.Tasks;
@@ -342,18 +343,17 @@ WHERE	id = @id
 
                 async Task SendOutgoingMessages(ITransactionContext _)
                 {
+                    var messages = new List<OutgoingTransportMessage>();
+
+                    while (outgoingMessages.TryDequeue(out var outgoingMessage))
+                    {
+                        messages.Add(outgoingMessage);
+                    }
+
                     using var connection = await ConnectionProvider.GetConnection();
                     using var __ = await ConnectionLocker.Instance.GetLockAsync(connection);
 
-                    while (outgoingMessages.IsEmpty == false)
-                    {
-                        if (outgoingMessages.TryDequeue(out var addressed) == false)
-                        {
-                            break;
-                        }
-
-                        await InnerSendAsync(addressed.DestinationAddress, addressed.TransportMessage, connection);
-                    }
+                    await InsertBatchedAsync(messages, connection);
 
                     await connection.Complete();
                 }

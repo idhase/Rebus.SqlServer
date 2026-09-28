@@ -5,6 +5,7 @@ using System.Data;
 using Microsoft.Data.SqlClient;
 using System.Diagnostics;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Rebus.Bus;
@@ -48,6 +49,8 @@ public class SqlServerTransport : ITransport, IInitializable, IDisposable
     private protected const string OutgoingMessagesKey = "outgoing-messages";
 
     const string OutgoingMessagesSentKey = "sql-server-transport-outgoing-messages-sent";
+
+    const int MaxMessagesPerInsert = 32;
 
     /// <summary>
     /// Default delay between executing the background cleanup task
@@ -360,12 +363,67 @@ IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{tableN
 
         if (!context.Items.TryGetValue(OutgoingMessagesKey, out var value) || value is not ConcurrentQueue<OutgoingTransportMessage> outgoingMessages) return;
 
-        using var _ = await ConnectionLocker.Instance.GetLockAsync(connection);
+        var messages = new List<OutgoingTransportMessage>();
 
         while (outgoingMessages.TryDequeue(out var outgoingMessage))
         {
-            await SendOrThrow(outgoingMessage.DestinationAddress, outgoingMessage.TransportMessage, connection).ConfigureAwait(false);
+            messages.Add(outgoingMessage);
         }
+
+        if (messages.Count == 0) return;
+
+        using var _ = await ConnectionLocker.Instance.GetLockAsync(connection);
+
+        await InsertBatchedAsync(messages, connection).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Inserts the messages with one INSERT per destination table and chunk of messages, keeping the order of the messages for each table.
+    /// Chunks are powers of two of at most <see cref="MaxMessagesPerInsert"/> messages, so each table only gets a handful of different
+    /// commands (and thus cached query plans), and a command never gets near SQL Server's limit of 2100 parameters.
+    /// </summary>
+    private protected async Task InsertBatchedAsync(IReadOnlyCollection<OutgoingTransportMessage> messages, IDbConnection connection)
+    {
+        foreach (var messagesForDestination in messages.GroupBy(m => m.DestinationAddress))
+        {
+            var destinationAddress = messagesForDestination.Key;
+            var remaining = messagesForDestination.ToList();
+
+            for (var offset = 0; offset < remaining.Count;)
+            {
+                var chunkSize = LargestPowerOfTwoNotGreaterThan(Math.Min(remaining.Count - offset, MaxMessagesPerInsert));
+
+                try
+                {
+                    if (chunkSize == 1)
+                    {
+                        await InnerSendAsync(destinationAddress, remaining[offset].TransportMessage, connection).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await InnerSendAsync(destinationAddress, remaining.GetRange(offset, chunkSize), connection).ConfigureAwait(false);
+                    }
+                }
+                catch (Exception e)
+                {
+                    throw new RebusApplicationException(e, $"Unable to send to destination {destinationAddress}");
+                }
+
+                offset += chunkSize;
+            }
+        }
+    }
+
+    static int LargestPowerOfTwoNotGreaterThan(int value)
+    {
+        var result = 1;
+
+        while (result * 2 <= value)
+        {
+            result *= 2;
+        }
+
+        return result;
     }
 
     async Task SendOrThrow(string destinationAddress, TransportMessage message, IDbConnection connection)
@@ -516,14 +574,7 @@ VALUES
     dateadd(ms, @ttlmilliseconds, dateadd(ss, @ttltotalseconds, sysdatetimeoffset()))
 )";
 
-        var headers = message.Headers.Clone();
-
-        var priority = GetMessagePriority(headers);
-        var visible = GetInitialVisibilityDelay(headers);
-        var ttl = GetTtl(headers);
-
-        // must be last because the other functions on the headers might change them
-        var serializedHeaders = HeaderSerializer.Serialize(headers);
+        var (serializedHeaders, priority, visible, ttl) = GetRowValues(message);
 
         command.Parameters.Add("headers", SqlDbType.VarBinary, MathUtil.GetNextPowerOfTwo(serializedHeaders.Length)).Value = serializedHeaders;
         command.Parameters.Add("body", SqlDbType.VarBinary, MathUtil.GetNextPowerOfTwo(message.Body.Length)).Value = message.Body;
@@ -534,6 +585,68 @@ VALUES
         command.Parameters.Add("ttlmilliseconds", SqlDbType.Int).Value = ttl.Milliseconds;
 
         await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+    }
+
+    async Task InnerSendAsync(string destinationAddress, IReadOnlyList<OutgoingTransportMessage> messages, IDbConnection connection)
+    {
+        var sendTable = TableName.Parse(destinationAddress);
+
+        using var command = connection.CreateCommand();
+
+        var values = new StringBuilder();
+
+        for (var index = 0; index < messages.Count; index++)
+        {
+            var message = messages[index].TransportMessage;
+            var (serializedHeaders, priority, visible, ttl) = GetRowValues(message);
+
+            if (index > 0) values.Append(",");
+
+            values.Append($@"
+(
+    @headers{index},
+    @body{index},
+    @priority{index},
+    dateadd(ms, @visiblemilliseconds{index}, dateadd(ss, @visibletotalseconds{index}, sysdatetimeoffset())),
+    dateadd(ms, @ttlmilliseconds{index}, dateadd(ss, @ttltotalseconds{index}, sysdatetimeoffset()))
+)");
+
+            // varbinary(max) for all rows, so the parameter declarations (and thus the query plan) only depend on the number of rows
+            command.Parameters.Add($"headers{index}", SqlDbType.VarBinary, -1).Value = serializedHeaders;
+            command.Parameters.Add($"body{index}", SqlDbType.VarBinary, -1).Value = message.Body;
+            command.Parameters.Add($"priority{index}", SqlDbType.Int).Value = priority;
+            command.Parameters.Add($"visibletotalseconds{index}", SqlDbType.Int).Value = (int)visible.TotalSeconds;
+            command.Parameters.Add($"visiblemilliseconds{index}", SqlDbType.Int).Value = visible.Milliseconds;
+            command.Parameters.Add($"ttltotalseconds{index}", SqlDbType.Int).Value = (int)ttl.TotalSeconds;
+            command.Parameters.Add($"ttlmilliseconds{index}", SqlDbType.Int).Value = ttl.Milliseconds;
+        }
+
+        command.CommandText = $@"
+INSERT INTO {sendTable.QualifiedName}
+(
+    [headers],
+    [body],
+    [priority],
+    [visible],
+    [expiration]
+)
+VALUES {values}";
+
+        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+    }
+
+    (byte[] SerializedHeaders, int Priority, TimeSpan Visible, TimeSpan Ttl) GetRowValues(TransportMessage message)
+    {
+        var headers = message.Headers.Clone();
+
+        var priority = GetMessagePriority(headers);
+        var visible = GetInitialVisibilityDelay(headers);
+        var ttl = GetTtl(headers);
+
+        // must be last because the other functions on the headers might change them
+        var serializedHeaders = HeaderSerializer.Serialize(headers);
+
+        return (serializedHeaders, priority, visible, ttl);
     }
 
     TimeSpan GetInitialVisibilityDelay(IDictionary<string, string> headers)
