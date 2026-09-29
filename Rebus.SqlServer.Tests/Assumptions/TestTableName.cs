@@ -126,6 +126,14 @@ public class TestTableName
             ClassicAssert.AreEqual(table.Catalog, "catalog");
             ClassicAssert.AreEqual(table.QualifiedName, "[catalog].[schema].[TableName]");
         }
+
+        [Test]
+        public void NullCatalogIsReportedAsCatalog()
+        {
+            var exception = Assert.Throws<ArgumentNullException>(() => new TableName("schema", "TableName", null));
+
+            Assert.That(exception.ParamName, Is.EqualTo("catalog"));
+        }
     
 
     //[TestCase("table].[schema")]

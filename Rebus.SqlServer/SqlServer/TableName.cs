@@ -47,7 +47,7 @@ public class TableName : IEquatable<TableName>
     {
         if (schema == null) throw new ArgumentNullException(nameof(schema));
         if (tableName == null) throw new ArgumentNullException(nameof(tableName));
-        if (catalog == null) throw new ArgumentNullException(nameof(tableName));
+        if (catalog == null) throw new ArgumentNullException(nameof(catalog));
 
         Schema = StripBrackets(schema);
         Name = StripBrackets(tableName);

@@ -1,5 +1,5 @@
 ﻿using System;
-using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -8,11 +8,12 @@ namespace Rebus.SqlServer;
 /// <summary>
 /// Helper that helps with getting exclusive access to a specific DB connection.
 /// </summary>
-class ConnectionLocker(int buckets) : IDisposable
+class ConnectionLocker
 {
-    public static readonly ConnectionLocker Instance = new(buckets: 256);
+    public static readonly ConnectionLocker Instance = new();
 
-    readonly ConcurrentDictionary<int, SemaphoreSlim> _semaphores = new();
+    // one semaphore per connection instance (compared by reference), which goes away together with the connection
+    readonly ConditionalWeakTable<IDbConnection, SemaphoreSlim> _semaphores = new();
 
     public async ValueTask<IDisposable> GetLockAsync(IDbConnection connection)
     {
@@ -34,28 +35,10 @@ class ConnectionLocker(int buckets) : IDisposable
         return new SemaphoreReleaser(semaphore);
     }
 
-    SemaphoreSlim GetSemaphore(IDbConnection connection)
-    {
-        var bucket = GetIntBucket(connection, buckets);
-        var semaphore = _semaphores.GetOrAdd(bucket, _ => new SemaphoreSlim(initialCount: 1));
-        return semaphore;
-    }
-
-    internal static int GetIntBucket(object obj, int bucketCount)
-    {
-        return (int)((uint)obj.GetHashCode() % bucketCount);
-    }
+    SemaphoreSlim GetSemaphore(IDbConnection connection) => _semaphores.GetValue(connection, _ => new SemaphoreSlim(initialCount: 1));
 
     readonly struct SemaphoreReleaser(SemaphoreSlim semaphore) : IDisposable
     {
         public void Dispose() => semaphore.Release();
-    }
-
-    public void Dispose()
-    {
-        foreach (var semaphore in _semaphores.Values)
-        {
-            semaphore.Dispose();
-        }
     }
 }
