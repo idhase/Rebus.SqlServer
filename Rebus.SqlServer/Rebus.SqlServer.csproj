@@ -24,7 +24,8 @@
 		<PackageId>Idha.Rebus.SqlServer</PackageId>
 		<Version>1.0.9</Version>
 		<AssemblyVersion>1.0.9</AssemblyVersion>
-		<PackageReadmeFile>README.md</PackageReadmeFile>
+		<PackageReadmeFile>PACKAGE.md</PackageReadmeFile>
+		<PackageReleaseNotes>1.0.9: Messages from a failed handler attempt are no longer sent on 2nd level retries, SqlServerTimeoutManager no longer stalls for 30 seconds on a lock, and a handler's messages are inserted with multi-row INSERTs. Requires Rebus 8.9.0 and Microsoft.Data.SqlClient 6.1.2. See the package README for details and https://github.com/idhase/Rebus.SqlServer/blob/master/CHANGELOG.md for the full history.</PackageReleaseNotes>
 	</PropertyGroup>
 	<ItemGroup>
 		<PackageReference Include="microsoft.data.sqlclient" Version="6.1.2" />
@@ -35,7 +36,7 @@
 			<Pack>True</Pack>
 			<PackagePath></PackagePath>
 		</None>
-		<None Include="..\README.md">
+		<None Include="..\PACKAGE.md">
 			<Pack>True</Pack>
 			<PackagePath>\</PackagePath>
 		</None>
