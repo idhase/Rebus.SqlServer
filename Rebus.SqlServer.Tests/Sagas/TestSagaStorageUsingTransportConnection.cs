@@ -95,6 +95,23 @@ public class TestSagaStorageUsingTransportConnection : FixtureBase
     }
 
     [Test]
+    [Description("The saga storage finds the SQL Server transport and its connection also when ITransport is decorated")]
+    public async Task SagaUpdateIsRolledBackWhenTransportCommitFailsWithADecoratedTransport()
+    {
+        var scenario = new Scenario { FailCommitOnAttempt = 1 };
+
+        var probes = StartBus(scenario, workers: 1, decorateTransport: true);
+
+        await Bus.SendLocal(new Count(Guid.NewGuid(), SendOnlyOnce: false));
+
+        await WaitForProbes(probes, 1);
+
+        Assert.That(probes, Is.EqualTo(new[] { "1" }), "The first attempt's saga update must not survive its failed commit");
+        Assert.That(scenario.Attempts, Is.EqualTo(2));
+        Assert.That(_decoratorReceives, Is.GreaterThan(0), "Expected the messages to have been received through the decorator");
+    }
+
+    [Test]
     public async Task SagaUpdateIsRolledBackWhenHandlerThrows()
     {
         var scenario = new Scenario { ThrowOnAttempt = 1 };
@@ -420,7 +437,9 @@ INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT
 
     IBus Bus { get; set; }
 
-    ConcurrentQueue<string> StartBus(Scenario scenario, int workers, bool withSavepointStep = false, int maxDeliveryAttempts = 100, bool secondLevelRetries = false)
+    int _decoratorReceives;
+
+    ConcurrentQueue<string> StartBus(Scenario scenario, int workers, bool withSavepointStep = false, int maxDeliveryAttempts = 100, bool secondLevelRetries = false, bool decorateTransport = false)
     {
         var probes = new ConcurrentQueue<string>();
         var activator = Using(new BuiltinHandlerActivator());
@@ -439,6 +458,11 @@ INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT
                 o.SetNumberOfWorkers(workers);
                 o.SetMaxParallelism(workers);
                 o.RetryStrategy($"{_queueName}-error", maxDeliveryAttempts: maxDeliveryAttempts, secondLevelRetriesEnabled: secondLevelRetries);
+
+                if (decorateTransport)
+                {
+                    o.Decorate<ITransport>(c => new PassThroughTransport(c.Get<ITransport>(), () => Interlocked.Increment(ref _decoratorReceives)));
+                }
 
                 if (withSavepointStep)
                 {
@@ -478,6 +502,22 @@ INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT
         using var command = connection.CreateCommand();
         command.CommandText = sql;
         command.ExecuteNonQuery();
+    }
+
+    class PassThroughTransport(ITransport transport, Action received) : ITransport
+    {
+        public void CreateQueue(string address) => transport.CreateQueue(address);
+
+        public Task Send(string destinationAddress, TransportMessage message, ITransactionContext context) => transport.Send(destinationAddress, message, context);
+
+        public async Task<TransportMessage> Receive(ITransactionContext context, CancellationToken cancellationToken)
+        {
+            var message = await transport.Receive(context, cancellationToken);
+            if (message != null) received();
+            return message;
+        }
+
+        public string Address => transport.Address;
     }
 
     // mirrors Idha.Rebus.NPoco's NPocoDatabaseStep: savepoint on the transport's transaction, rolled back to if the handler throws
