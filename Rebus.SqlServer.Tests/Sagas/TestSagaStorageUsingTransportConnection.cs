@@ -138,6 +138,36 @@ public class TestSagaStorageUsingTransportConnection : FixtureBase
         Assert.That(probes, Is.EquivalentTo(expected), "Every message must increment the saga exactly once, and every count must be sent exactly once");
     }
 
+    [Test]
+    [Description("A burst to one saga with the usual 5 delivery attempts dead-letters some messages, which must leave the saga intact")]
+    public async Task BurstToOneSagaKeepsOneSagaWhenMessagesAreDeadLettered()
+    {
+        const int burst = 50;
+
+        var probes = StartBus(new Scenario(), workers: 5, maxDeliveryAttempts: 5);
+        var sagaId = Guid.NewGuid();
+
+        await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
+        await WaitForProbes(probes, 1);
+
+        await Task.WhenAll(Enumerable.Range(1, burst - 1).Select(_ => Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false))));
+
+        using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
+        {
+            while (probes.Count + CountRows($"{_queueName}-error") < burst)
+            {
+                await Task.Delay(100, timeout.Token);
+            }
+        }
+
+        await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
+        await WaitForProbes(probes, probes.Count + 1);
+
+        var expected = Enumerable.Range(1, probes.Count).Select(n => n.ToString());
+
+        Assert.That(probes, Is.EquivalentTo(expected), "Every committed message must have counted on the same saga, also after others were dead-lettered");
+    }
+
     [TestCase(true)]
     [TestCase(false)]
     [Description("Like Idha.Rebus.NPoco: a step before Dispatch sets a savepoint on the transport's transaction, and the handler writes through it")]
@@ -170,6 +200,151 @@ public class TestSagaStorageUsingTransportConnection : FixtureBase
         await WaitForProbes(probes, 1);
 
         Assert.That(probes, Is.EqualTo(new[] { "failed:1" }), "The first IFailed<T> attempt's saga update must not survive its failed commit");
+    }
+
+    public enum OtherSaga { IsCreated, IsUpdated }
+
+    [TestCase(OtherSaga.IsCreated, 0)]
+    [TestCase(OtherSaga.IsUpdated, 0)]
+    [TestCase(OtherSaga.IsCreated, 5000)]
+    [TestCase(OtherSaga.IsUpdated, 5000)]
+    [Description("Saga rows stay locked until the transport commits, which must not hold up messages to other sagas")]
+    public async Task OtherSagasAreNotBlockedWhileASagaTransactionIsOpen(OtherSaga otherSaga, int seededSagas)
+    {
+        if (!_readCommittedSnapshot && seededSagas == 0)
+        {
+            Assert.Ignore("Without RCSI, the saga lookup on near-empty tables scans the data table and waits for other sagas' uncommitted rows. With more rows it seeks, and with RCSI it doesn't take locks");
+        }
+
+        var scenario = new Scenario();
+        var probes = StartBus(scenario, workers: 2);
+
+        SeedUnrelatedSagas(seededSagas);
+
+        var heldSaga = Guid.NewGuid();
+        var otherSagaId = Guid.NewGuid();
+
+        try
+        {
+            if (otherSaga == OtherSaga.IsUpdated)
+            {
+                await Bus.SendLocal(new Count(heldSaga, SendOnlyOnce: false));
+                await Bus.SendLocal(new Count(otherSagaId, SendOnlyOnce: false));
+                await WaitForProbes(probes, 2);
+            }
+
+            var probesBefore = probes.Count;
+
+            await Bus.SendLocal(new Count(heldSaga, SendOnlyOnce: false, HoldCommit: true));
+            await scenario.CommitHeld.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await Bus.SendLocal(new Count(otherSagaId, SendOnlyOnce: false));
+
+            var otherSagaFinished = await WaitForProbeCount(probes, probesBefore + 1, TimeSpan.FromSeconds(10));
+
+            Assert.That(otherSagaFinished, Is.True, "A message to another saga must finish while the held saga's transaction is open");
+        }
+        finally
+        {
+            scenario.ReleaseCommit.TrySetResult();
+        }
+
+        await WaitForProbes(probes, otherSaga == OtherSaga.IsUpdated ? 4 : 2);
+    }
+
+    [Test]
+    [Description(@"A saga update deletes its index rows before the revision check, so one that loses a conflict has done half its work when it throws.
+Rebus dead-letters a message in the same transaction and commits it, so that half must already be rolled back, or the saga can't be found any more")]
+    public async Task LosingSagaUpdateLeavesNoTraceWhenItsMessageIsDeadLettered()
+    {
+        var scenario = new Scenario();
+        var probes = StartBus(scenario, workers: 2, maxDeliveryAttempts: 1);
+        var sagaId = Guid.NewGuid();
+
+        await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
+        await WaitForProbes(probes, 1);
+
+        try
+        {
+            await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false, HoldCommit: true));
+            await scenario.CommitHeld.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            // with RCSI this one reads the saga as it was before the held update, so its own update loses
+            await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
+            await Task.Delay(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            scenario.ReleaseCommit.TrySetResult();
+        }
+
+        await WaitForProbes(probes, 2);
+
+        if (_readCommittedSnapshot)
+        {
+            Assert.That(CountRows($"{_queueName}-error"), Is.EqualTo(1), "Expected the conflicting message to be dead-lettered");
+        }
+
+        await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
+        await WaitForProbes(probes, probes.Count + 1);
+
+        var expected = Enumerable.Range(1, probes.Count).Select(n => n.ToString());
+
+        Assert.That(probes, Is.EqualTo(expected), "Every committed message must have found and updated the same saga");
+    }
+
+    [Test]
+    [Description("Control for the test above: shows that it can see blocking at all")]
+    public async Task SameSagaIsBlockedWhileItsTransactionIsOpen()
+    {
+        var scenario = new Scenario();
+        var probes = StartBus(scenario, workers: 2);
+        var sagaId = Guid.NewGuid();
+
+        try
+        {
+            await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false, HoldCommit: true));
+            await scenario.CommitHeld.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
+
+            var secondFinished = await WaitForProbeCount(probes, 1, TimeSpan.FromSeconds(5));
+
+            Assert.That(secondFinished, Is.False, "A second message to the held saga must wait for its transaction");
+        }
+        finally
+        {
+            scenario.ReleaseCommit.TrySetResult();
+        }
+
+        await WaitForProbes(probes, 2);
+
+        Assert.That(probes, Is.EquivalentTo(new[] { "1", "2" }));
+    }
+
+    void SeedUnrelatedSagas(int count)
+    {
+        if (count == 0) return;
+
+        ExecuteOnTestDatabase($@"
+WITH n AS (SELECT TOP ({count}) NEWID() AS id FROM sys.all_objects a CROSS JOIN sys.all_objects b)
+SELECT id INTO #ids FROM n;
+INSERT INTO [{_queueName}-data] ([id], [revision], [data]) SELECT id, 0, 0x00 FROM #ids;
+INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT 'Seeded', 'CorrelationId', CONVERT(nvarchar(200), id), id FROM #ids;");
+    }
+
+    static async Task<bool> WaitForProbeCount(ConcurrentQueue<string> probes, int expectedCount, TimeSpan within)
+    {
+        var deadline = DateTime.UtcNow + within;
+
+        while (probes.Count < expectedCount)
+        {
+            if (DateTime.UtcNow > deadline) return false;
+
+            await Task.Delay(50);
+        }
+
+        return true;
     }
 
     IBus Bus { get; set; }
@@ -302,6 +477,8 @@ public class TestSagaStorageUsingTransportConnection : FixtureBase
         public int FailCommitOnAttempt { get; init; }
         public int ThrowOnAttempt { get; init; }
         public string WorkTable { get; init; }
+        public TaskCompletionSource CommitHeld { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseCommit { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Attempts => _attempts;
         public int NextAttempt() => Interlocked.Increment(ref _attempts);
     }
@@ -350,6 +527,16 @@ public class TestSagaStorageUsingTransportConnection : FixtureBase
             if (attempt == _scenario.FailCommitOnAttempt)
             {
                 MessageContext.Current.TransactionContext.OnCommit(async _ => throw new InvalidOperationException("commit fails after the saga data was saved"));
+            }
+
+            if (message.HoldCommit)
+            {
+                // the transport commits its SQL transaction in OnAck, so this keeps the saga's rows locked until released
+                MessageContext.Current.TransactionContext.OnCommit(async _ =>
+                {
+                    _scenario.CommitHeld.TrySetResult();
+                    await _scenario.ReleaseCommit.Task;
+                });
             }
 
             if (attempt == _scenario.ThrowOnAttempt)
@@ -407,7 +594,7 @@ public class TestSagaStorageUsingTransportConnection : FixtureBase
         public int Failures { get; set; }
     }
 
-    record Count(Guid SagaId, bool SendOnlyOnce);
+    record Count(Guid SagaId, bool SendOnlyOnce, bool HoldCommit = false);
 
     record Explode(Guid SagaId);
 
@@ -484,19 +671,96 @@ public class TestSqlServerTransportConnectionProvider
         Assert.That(connection, Is.SameAs(fallbackConnection));
     }
 
-    [Test]
-    public async Task SharesTheTransportConnectionInsideOfMessageHandling()
+    [Test, Category(Categories.SqlServer)]
+    public async Task SharesTheTransportConnectionAndTransactionInsideOfMessageHandling()
     {
-        var transportSqlConnection = new SqlConnection();
-        var provider = new SqlServerTransportConnectionProvider(new FixedConnectionProvider(null));
+        using var transport = OpenTransportConnection();
+        using var scope = InScopeWith(transport);
 
+        using var connection = await NewProvider().GetConnection();
+
+        Assert.That(connection.Connection, Is.SameAs(transport.Connection));
+        Assert.That(connection.Transaction, Is.SameAs(transport.Transaction));
+    }
+
+    [Test, Category(Categories.SqlServer)]
+    public async Task RollsBackToItsSavepointWhenDisposedWithoutCompleting()
+    {
+        using var transport = OpenTransportConnection();
+        using var scope = InScopeWith(transport);
+
+        Execute(transport, "INSERT INTO #work VALUES (1)");
+
+        using (var connection = await NewProvider().GetConnection())
+        {
+            Execute(connection, "INSERT INTO #work VALUES (2)");
+        }
+
+        Assert.That(CountRows(transport), Is.EqualTo(1), "Only the work done through the uncompleted connection is rolled back");
+        Assert.That(transport.Transaction.Connection, Is.Not.Null, "The transport's transaction must still be usable");
+    }
+
+    [Test, Category(Categories.SqlServer)]
+    public async Task KeepsTheWorkWhenCompleted()
+    {
+        using var transport = OpenTransportConnection();
+        using var scope = InScopeWith(transport);
+
+        using (var connection = await NewProvider().GetConnection())
+        {
+            Execute(connection, "INSERT INTO #work VALUES (2)");
+            await connection.Complete();
+        }
+
+        Assert.That(CountRows(transport), Is.EqualTo(1));
+        Assert.That(transport.Transaction.Connection, Is.Not.Null, "Completing must not commit the transport's transaction");
+    }
+
+    [Test]
+    public void ThrowsWhenTheTransportConnectionHasNoTransaction()
+    {
         using var scope = new RebusTransactionScope();
         scope.TransactionContext.Items[SqlServerTransport.CurrentConnectionKey] =
-            Task.FromResult<IDbConnection>(new DbConnectionWrapper(transportSqlConnection, null, managedExternally: false));
+            Task.FromResult<IDbConnection>(new DbConnectionWrapper(new SqlConnection(), null, managedExternally: true));
 
-        var connection = await provider.GetConnection();
+        var exception = Assert.ThrowsAsync<InvalidOperationException>(() => NewProvider().GetConnection());
 
-        Assert.That(connection.Connection, Is.SameAs(transportSqlConnection));
+        Assert.That(exception.Message, Does.Contain("SqlTransaction"));
+    }
+
+    static SqlServerTransportConnectionProvider NewProvider() => new(new FixedConnectionProvider(null));
+
+    static IDbConnection OpenTransportConnection()
+    {
+        var connection = new SqlConnection(SqlTestHelper.ConnectionString);
+        connection.Open();
+
+        var transport = new DbConnectionWrapper(connection, connection.BeginTransaction(), managedExternally: false);
+
+        Execute(transport, "CREATE TABLE #work ([id] INT NOT NULL)");
+
+        return transport;
+    }
+
+    static RebusTransactionScope InScopeWith(IDbConnection transport)
+    {
+        var scope = new RebusTransactionScope();
+        scope.TransactionContext.Items[SqlServerTransport.CurrentConnectionKey] = Task.FromResult(transport);
+        return scope;
+    }
+
+    static void Execute(IDbConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.ExecuteNonQuery();
+    }
+
+    static int CountRows(IDbConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM #work";
+        return (int)command.ExecuteScalar();
     }
 
     [Test]

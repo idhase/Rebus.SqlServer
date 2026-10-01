@@ -16,6 +16,8 @@ It follows upstream closely, and configuration and usage are the same. See the [
 
 - **Saga data can be committed in the transport's transaction.** With `.Sagas(s => s.StoreInSqlServerUsingTransportConnection(dataTable, indexTable))`, saga data is read and written through the SQL Server transport's connection and transaction while a message is handled. The saga update then commits or rolls back together with the receive and the sends. With `StoreInSqlServer(connectionString, ...)` the saga storage commits on its own connection before the transport commits, so if that commit fails the message comes back to a saga whose data already says the work was done, and the sends from the first attempt are gone.
 - It takes no connection string: the saga tables live in the transport's database, and outside message handling (e.g. creating the tables at startup) the transport's connection provider is used. Requires the normal (not lease-based) SQL Server transport, and throws at startup otherwise.
+- Saga rows stay locked until the transport commits, not just until the saga is saved. With READ_COMMITTED_SNAPSHOT on, messages to other sagas aren't held up. With it off and near-empty saga tables, the saga lookup scans the data table and waits for other sagas' uncommitted rows until their messages commit.
+- `EnforceExclusiveAccess()` releases its lock when the pipeline is done, before the transport commits. With READ_COMMITTED_SNAPSHOT on, a second message to the same saga then reads the last committed saga data and gets a `ConcurrencyException` when it saves, and is retried. That's correct but noisier than with `StoreInSqlServer`.
 
 ## What's new in 1.0.9
 

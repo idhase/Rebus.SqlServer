@@ -40,6 +40,6 @@ class SqlServerTransportConnectionProvider : IDbConnectionProvider
 
         // No ConnectionLocker here, unlike the transport's own commands: the receive is done before the pipeline runs, the
         // pipeline runs its steps one at a time, and outgoing messages are inserted at commit, after the saga has been saved
-        return new DbConnectionWrapper(transportConnection.Connection, transportConnection.Transaction, managedExternally: true);
+        return SavepointDbConnection.Create(transportConnection.Connection, transportConnection.Transaction);
     }
 }
