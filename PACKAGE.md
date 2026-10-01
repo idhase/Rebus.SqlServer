@@ -8,7 +8,14 @@ It follows upstream closely, and configuration and usage are the same. See the [
 
 - `IDbConnection` exposes the underlying `SqlConnection` and `SqlTransaction` as `Connection` and `Transaction`, so other code can share the transport's connection and transaction. Idha.Rebus.NPoco uses this.
 - Table names can include a database, as in `catalog.schema.table`. This is meant for sending to queues in other databases on the same server. Don't use it for tables that Rebus creates (input queues, sagas, subscriptions, timeouts, outbox), because the checks for whether those exist only look in the current database.
-- Fixes and improvements that aren't in upstream yet, see 1.0.9 below.
+- Fixes and improvements that aren't in upstream yet, see below.
+
+## Unreleased
+
+### Improvements
+
+- **Saga data can be committed in the transport's transaction.** With `.Sagas(s => s.StoreInSqlServerUsingTransportConnection(dataTable, indexTable))`, saga data is read and written through the SQL Server transport's connection and transaction while a message is handled. The saga update then commits or rolls back together with the receive and the sends. With `StoreInSqlServer(connectionString, ...)` the saga storage commits on its own connection before the transport commits, so if that commit fails the message comes back to a saga whose data already says the work was done, and the sends from the first attempt are gone.
+- It takes no connection string: the saga tables live in the transport's database, and outside message handling (e.g. creating the tables at startup) the transport's connection provider is used. Requires the normal (not lease-based) SQL Server transport, and throws at startup otherwise.
 
 ## What's new in 1.0.9
 

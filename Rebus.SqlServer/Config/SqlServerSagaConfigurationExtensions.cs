@@ -1,11 +1,14 @@
 ﻿using System;
 using System.Threading.Tasks;
+using Rebus.Exceptions;
 using Rebus.Injection;
 using Rebus.Logging;
 using Rebus.Sagas;
 using Rebus.SqlServer;
 using Rebus.SqlServer.Sagas;
 using Rebus.SqlServer.Sagas.Serialization;
+using Rebus.SqlServer.Transport;
+using Rebus.Transport;
 
 namespace Rebus.Config;
 
@@ -60,6 +63,58 @@ public static class SqlServerSagaConfigurationExtensions
         {
             var rebusLoggerFactory = c.Get<IRebusLoggerFactory>();
             var connectionProvider = new DbConnectionFactoryProvider(connectionFactory);
+            var sagaTypeNamingStrategy = GetSagaTypeNamingStrategy(c, rebusLoggerFactory);
+            var serializer = c.Has<ISagaSerializer>(false) ? c.Get<ISagaSerializer>() : new DefaultSagaSerializer();
+
+            var sagaStorage = new SqlServerSagaStorage(connectionProvider, dataTableName, indexTableName, rebusLoggerFactory, sagaTypeNamingStrategy, serializer);
+
+            if (automaticallyCreateTables)
+            {
+                sagaStorage.EnsureTablesAreCreated();
+            }
+
+            return sagaStorage;
+        });
+    }
+
+    /// <summary>
+    /// Configures Rebus to use SQL Server to store sagas, using the tables specified to store data and indexed properties respectively.
+    /// Saga data is stored in the transport's database: while a message is being handled it is read and written through the
+    /// SQL Server transport's connection and transaction, so it commits and rolls back together with the receive and the
+    /// outgoing messages. Outside of message handling, e.g. when creating the tables, the transport's connection provider is used.
+    /// Requires the (non-lease) SQL Server transport, and throws at startup with any other transport.
+    /// </summary>
+    public static void StoreInSqlServerUsingTransportConnection(this StandardConfigurer<ISagaStorage> configurer,
+        string dataTableName, string indexTableName, bool automaticallyCreateTables = true)
+    {
+        if (configurer == null) throw new ArgumentNullException(nameof(configurer));
+        if (dataTableName == null) throw new ArgumentNullException(nameof(dataTableName));
+        if (indexTableName == null) throw new ArgumentNullException(nameof(indexTableName));
+
+        configurer.Register(c =>
+        {
+            if (!c.Has<SqlServerTransportRegistration>())
+            {
+                throw new RebusConfigurationException($"{nameof(StoreInSqlServerUsingTransportConnection)} requires the SQL Server transport (UseSqlServer)");
+            }
+
+            // resolving the transport creates it, which fills in the registration
+            c.Get<ITransport>();
+
+            var registration = c.Get<SqlServerTransportRegistration>();
+
+            if (registration.Transport is SqlServerLeaseTransport)
+            {
+                throw new RebusConfigurationException($"{nameof(StoreInSqlServerUsingTransportConnection)} does not work with the lease-based SQL Server transport, because it receives on a connection of its own");
+            }
+
+            if (registration.IsOneWayClient)
+            {
+                throw new RebusConfigurationException($"{nameof(StoreInSqlServerUsingTransportConnection)} does not work with a one-way client, which handles no messages and so has no sagas");
+            }
+
+            var rebusLoggerFactory = c.Get<IRebusLoggerFactory>();
+            var connectionProvider = new SqlServerTransportConnectionProvider(registration.ConnectionProvider);
             var sagaTypeNamingStrategy = GetSagaTypeNamingStrategy(c, rebusLoggerFactory);
             var serializer = c.Has<ISagaSerializer>(false) ? c.Get<ISagaSerializer>() : new DefaultSagaSerializer();
 

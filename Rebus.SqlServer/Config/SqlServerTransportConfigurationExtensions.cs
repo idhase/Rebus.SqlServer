@@ -267,6 +267,10 @@ public static class SqlServerTransportConfigurationExtensions
 
     static TTransportOptions Configure<TTransportOptions>(StandardConfigurer<ITransport> configurer, TransportFactoryDelegate transportFactory, TTransportOptions transportOptions) where TTransportOptions : SqlServerTransportOptions
     {
+        var registration = new SqlServerTransportRegistration();
+
+        configurer.OtherService<SqlServerTransportRegistration>().Register(_ => registration);
+
         configurer.Register(context =>
             {
                 if (transportOptions.IsOneWayClient)
@@ -276,6 +280,11 @@ public static class SqlServerTransportConfigurationExtensions
 
                 var connectionProvider = transportOptions.ConnectionProviderFactory(context);
                 var transport = transportFactory(context, connectionProvider, transportOptions.InputQueueName);
+
+                registration.Transport = transport;
+                registration.ConnectionProvider = connectionProvider;
+                registration.IsOneWayClient = transportOptions.IsOneWayClient;
+
                 if ((transportOptions.InputQueueName != null) && (transportOptions.EnsureTablesAreCreated == true))
                 {
                     transport.EnsureTableIsCreated();
