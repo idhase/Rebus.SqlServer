@@ -82,7 +82,8 @@ public static class SqlServerSagaConfigurationExtensions
     /// Saga data is stored in the transport's database: while a message is being handled it is read and written through the
     /// SQL Server transport's connection and transaction, so it commits and rolls back together with the receive and the
     /// outgoing messages. Outside of message handling, e.g. when creating the tables, the transport's connection provider is used.
-    /// Requires the (non-lease) SQL Server transport, and throws at startup with any other transport.
+    /// Requires the (non-lease) SQL Server transport working in a SqlTransaction of its own, i.e. not configured with
+    /// enlistInAmbientTransaction: true, and throws at startup otherwise.
     /// </summary>
     public static void StoreInSqlServerUsingTransportConnection(this StandardConfigurer<ISagaStorage> configurer,
         string dataTableName, string indexTableName, bool automaticallyCreateTables = true)
@@ -113,6 +114,8 @@ public static class SqlServerSagaConfigurationExtensions
                 throw new RebusConfigurationException($"{nameof(StoreInSqlServerUsingTransportConnection)} does not work with a one-way client, which handles no messages and so has no sagas");
             }
 
+            EnsureTransportWorksInASqlTransaction(registration.ConnectionProvider);
+
             var rebusLoggerFactory = c.Get<IRebusLoggerFactory>();
             var connectionProvider = new SqlServerTransportConnectionProvider(registration.ConnectionProvider);
             var sagaTypeNamingStrategy = GetSagaTypeNamingStrategy(c, rebusLoggerFactory);
@@ -127,6 +130,19 @@ public static class SqlServerSagaConfigurationExtensions
 
             return sagaStorage;
         });
+    }
+
+    // Saga writes are made all-or-nothing with savepoints in the transport's SqlTransaction. A transport that enlists in an ambient
+    // System.Transactions transaction instead, or a connection factory that begins none, would fail every saga access at runtime,
+    // so one connection is taken here to fail at startup instead. Disposing it uncompleted rolls back its empty transaction.
+    static void EnsureTransportWorksInASqlTransaction(IDbConnectionProvider transportConnectionProvider)
+    {
+        using var connection = AsyncHelpers.GetSync(transportConnectionProvider.GetConnection);
+
+        if (connection.Transaction == null)
+        {
+            throw new RebusConfigurationException($"{nameof(StoreInSqlServerUsingTransportConnection)} requires the SQL Server transport to work in a SqlTransaction of its own, which it doesn't when it's configured with enlistInAmbientTransaction: true, or with a connection factory that returns a connection without a transaction");
+        }
     }
 
     /// <summary>

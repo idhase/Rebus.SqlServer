@@ -290,7 +290,8 @@ Rebus dead-letters a message in the same transaction and commits it, so that hal
 
         var expected = Enumerable.Range(1, probes.Count).Select(n => n.ToString());
 
-        Assert.That(probes, Is.EqualTo(expected), "Every committed message must have found and updated the same saga");
+        // without RCSI the second message waits instead of conflicting, and its probe can overtake the held message's
+        Assert.That(probes, Is.EquivalentTo(expected), "Every committed message must have found and updated the same saga");
     }
 
     [Test]
@@ -622,6 +623,35 @@ public class TestSagaStorageUsingTransportConnectionConfiguration : FixtureBase
         var exception = StartAndCatch(t => t.UseSqlServerInLeaseMode(new SqlServerLeaseTransportOptions(SqlTestHelper.ConnectionString), queueName));
 
         Assert.That(exception.ToString(), Does.Contain("does not work with the lease-based SQL Server transport"));
+    }
+
+    [Test]
+    public void ThrowsAtStartupWhenTheTransportEnlistsInAmbientTransactions()
+    {
+        var queueName = $"sagatx-enlist-{Guid.NewGuid():N}";
+
+        Using(new DisposableCallback(() => SqlTestHelper.DropTable(queueName)));
+
+        var exception = StartAndCatch(t => t.UseSqlServer(new SqlServerTransportOptions(SqlTestHelper.ConnectionString, enlistInAmbientTransaction: true), queueName));
+
+        Assert.That(exception.ToString(), Does.Contain("SqlTransaction of its own"));
+    }
+
+    [Test]
+    public void ThrowsAtStartupWhenTheTransportConnectionFactoryGivesNoTransaction()
+    {
+        var queueName = $"sagatx-notx-{Guid.NewGuid():N}";
+
+        Using(new DisposableCallback(() => SqlTestHelper.DropTable(queueName)));
+
+        var exception = StartAndCatch(t => t.UseSqlServer(new SqlServerTransportOptions(async () =>
+        {
+            var connection = new SqlConnection(SqlTestHelper.ConnectionString);
+            await connection.OpenAsync();
+            return new DbConnectionWrapper(connection, null, managedExternally: false);
+        }), queueName));
+
+        Assert.That(exception.ToString(), Does.Contain("SqlTransaction of its own"));
     }
 
     [Test]
