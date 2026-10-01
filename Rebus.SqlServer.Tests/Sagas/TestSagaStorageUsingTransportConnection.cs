@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,7 +14,9 @@ using Rebus.Pipeline;
 using Rebus.Pipeline.Receive;
 using Rebus.Retry.Simple;
 using Rebus.Sagas;
+using Rebus.SqlServer.Sagas;
 using Rebus.SqlServer.Transport;
+using Rebus.Messages;
 using Rebus.Tests.Contracts;
 using Rebus.Transport;
 using Rebus.Transport.InMem;
@@ -213,6 +216,26 @@ public class TestSagaStorageUsingTransportConnection : FixtureBase
     }
 
     [Test]
+    [Description(@"Rebus saves a message's sagas one after the other once all handlers are done. When a later save fails and the message is
+dead-lettered in the same transaction, an earlier saga's successful update must not be committed with it")]
+    public async Task EarlierSagaUpdateIsRolledBackWhenALaterSagaSaveFailsAndTheMessageIsDeadLettered()
+    {
+        var probes = StartBus(new Scenario(), workers: 1, maxDeliveryAttempts: 1);
+        var sagaId = Guid.NewGuid();
+
+        await Bus.SendLocal(new Both(sagaId, FailSecondSave: false));
+        await WaitForProbes(probes, 2);
+
+        await Bus.SendLocal(new Both(sagaId, FailSecondSave: true));
+        await WaitUntil(() => CountRows($"{_queueName}-error") == 1, "the message whose second saga save fails to be dead-lettered");
+
+        await Bus.SendLocal(new Both(sagaId, FailSecondSave: false));
+        await WaitForProbes(probes, 4);
+
+        Assert.That(probes, Is.EquivalentTo(new[] { "first:1", "second:1", "first:2", "second:2" }), "The dead-lettered message must have left both sagas as they were");
+    }
+
+    [Test]
     [Description("On the 2nd level retry path the transaction is committed after the handler failed, with the IFailed<T> handler's work in it")]
     public async Task SagaUpdateFromFailedHandlerIsRolledBackWhenTransportCommitFails()
     {
@@ -404,6 +427,8 @@ INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT
 
         activator.Register((bus, _) => new CountingSaga(bus, scenario));
         activator.Register((bus, _) => new FailedHandlerSaga(bus, scenario));
+        activator.Register((bus, _) => new FirstOfBothSaga(bus));
+        activator.Register((bus, _) => new SecondOfBothSaga(bus));
         activator.Handle<Probe>(async probe => probes.Enqueue(probe.Value));
 
         Bus = Configure.With(activator)
@@ -674,6 +699,59 @@ INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT
 
     record Finish(Guid SagaId);
 
+    record Both(Guid SagaId, bool FailSecondSave);
+
+    class FirstOfBothSaga : Saga<FirstOfBothSagaData>, IAmInitiatedBy<Both>
+    {
+        readonly IBus _bus;
+
+        public FirstOfBothSaga(IBus bus) => _bus = bus;
+
+        protected override void CorrelateMessages(ICorrelationConfig<FirstOfBothSagaData> config) =>
+            config.Correlate<Both>(m => m.SagaId, d => d.CorrelationId);
+
+        public async Task Handle(Both message)
+        {
+            Data.CorrelationId = message.SagaId;
+            Data.Count++;
+            await _bus.SendLocal(new Probe($"first:{Data.Count}"));
+        }
+    }
+
+    class FirstOfBothSagaData : SagaData
+    {
+        public Guid CorrelationId { get; set; }
+        public int Count { get; set; }
+    }
+
+    class SecondOfBothSaga : Saga<SecondOfBothSagaData>, IAmInitiatedBy<Both>
+    {
+        readonly IBus _bus;
+
+        public SecondOfBothSaga(IBus bus) => _bus = bus;
+
+        protected override void CorrelateMessages(ICorrelationConfig<SecondOfBothSagaData> config) =>
+            config.Correlate<Both>(m => m.SagaId, d => d.CorrelationId);
+
+        public async Task Handle(Both message)
+        {
+            Data.CorrelationId = message.SagaId;
+            Data.Count++;
+            Data.FailSave = message.FailSecondSave;
+            await _bus.SendLocal(new Probe($"second:{Data.Count}"));
+        }
+    }
+
+    class SecondOfBothSagaData : SagaData
+    {
+        public Guid CorrelationId { get; set; }
+        public int Count { get; set; }
+        public bool FailSave { get; set; }
+
+        // makes saving this saga throw after the handlers are done, when the other saga has already been saved
+        public string Unsaveable => FailSave ? throw new InvalidOperationException("this saga data can't be serialized") : null;
+    }
+
     record Explode(Guid SagaId);
 
     record Probe(string Value);
@@ -791,46 +869,69 @@ public class TestSqlServerTransportConnectionProvider
     }
 
     [Test, Category(Categories.SqlServer)]
-    public async Task RollsBackToItsSavepointWhenDisposedWithoutCompleting()
+    public async Task DisposingTheSharedConnectionLeavesTheTransportsTransactionAlone()
+    {
+        using var transport = OpenTransportConnection();
+        using var scope = InScopeWith(transport);
+
+        using (var connection = await NewProvider().GetConnection())
+        {
+            Execute(connection, "INSERT INTO #work VALUES (1)");
+            await connection.Complete();
+        }
+
+        Assert.That(CountRows(transport), Is.EqualTo(1), "Neither Complete nor Dispose may commit, roll back or close the transport's transaction");
+        Assert.That(transport.Transaction.Connection, Is.Not.Null);
+    }
+
+    [Test, Category(Categories.SqlServer)]
+    public async Task AttemptStepRollsBackToItsSavepointWhenTheRestOfTheAttemptThrows()
     {
         using var transport = OpenTransportConnection();
         using var scope = InScopeWith(transport);
 
         Execute(transport, "INSERT INTO #work VALUES (1)");
 
-        using (var connection = await NewProvider().GetConnection())
-        {
-            Execute(connection, "INSERT INTO #work VALUES (2)");
-        }
+        var context = new IncomingStepContext(new TransportMessage(new Dictionary<string, string>(), Array.Empty<byte>()), scope.TransactionContext);
 
-        Assert.That(CountRows(transport), Is.EqualTo(1), "Only the work done through the uncompleted connection is rolled back");
+        Assert.ThrowsAsync<InvalidOperationException>(() => new SagaAttemptSavepointStep().Process(context, () =>
+        {
+            Execute(transport, "INSERT INTO #work VALUES (2)");
+            throw new InvalidOperationException("the attempt fails");
+        }));
+
+        Assert.That(CountRows(transport), Is.EqualTo(1), "Only the attempt's work is rolled back");
         Assert.That(transport.Transaction.Connection, Is.Not.Null, "The transport's transaction must still be usable");
     }
 
     [Test, Category(Categories.SqlServer)]
-    public async Task KeepsTheWorkWhenCompleted()
+    public async Task AttemptStepKeepsTheWorkWhenTheAttemptSucceeds()
     {
         using var transport = OpenTransportConnection();
         using var scope = InScopeWith(transport);
 
-        using (var connection = await NewProvider().GetConnection())
+        var context = new IncomingStepContext(new TransportMessage(new Dictionary<string, string>(), Array.Empty<byte>()), scope.TransactionContext);
+
+        await new SagaAttemptSavepointStep().Process(context, () =>
         {
-            Execute(connection, "INSERT INTO #work VALUES (2)");
-            await connection.Complete();
-        }
+            Execute(transport, "INSERT INTO #work VALUES (2)");
+            return Task.CompletedTask;
+        });
 
         Assert.That(CountRows(transport), Is.EqualTo(1));
-        Assert.That(transport.Transaction.Connection, Is.Not.Null, "Completing must not commit the transport's transaction");
+        Assert.That(transport.Transaction.Connection, Is.Not.Null, "The step must not commit the transport's transaction");
     }
 
     [Test]
-    public void ThrowsWhenTheTransportConnectionHasNoTransaction()
+    public void AttemptStepThrowsWhenTheTransportConnectionHasNoTransaction()
     {
         using var scope = new RebusTransactionScope();
         scope.TransactionContext.Items[SqlServerTransport.CurrentConnectionKey] =
             Task.FromResult<IDbConnection>(new DbConnectionWrapper(new SqlConnection(), null, managedExternally: true));
 
-        var exception = Assert.ThrowsAsync<InvalidOperationException>(() => NewProvider().GetConnection());
+        var context = new IncomingStepContext(new TransportMessage(new Dictionary<string, string>(), Array.Empty<byte>()), scope.TransactionContext);
+
+        var exception = Assert.ThrowsAsync<InvalidOperationException>(() => new SagaAttemptSavepointStep().Process(context, () => Task.CompletedTask));
 
         Assert.That(exception.Message, Does.Contain("SqlTransaction"));
     }

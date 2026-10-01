@@ -39,7 +39,8 @@ class SqlServerTransportConnectionProvider : IDbConnectionProvider
         var transportConnection = await transportConnectionTask.ConfigureAwait(false);
 
         // No ConnectionLocker here, unlike the transport's own commands: the receive is done before the pipeline runs, the
-        // pipeline runs its steps one at a time, and outgoing messages are inserted at commit, after the saga has been saved
-        return SavepointDbConnection.Create(transportConnection.Connection, transportConnection.Transaction);
+        // pipeline runs its steps one at a time, and outgoing messages are inserted at commit, after the saga has been saved.
+        // A failed saga write is rolled back by SagaAttemptSavepointStep, together with the rest of the attempt.
+        return new DbConnectionWrapper(transportConnection.Connection, transportConnection.Transaction, managedExternally: true);
     }
 }

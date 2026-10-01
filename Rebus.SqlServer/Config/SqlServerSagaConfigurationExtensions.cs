@@ -3,6 +3,8 @@ using System.Threading.Tasks;
 using Rebus.Exceptions;
 using Rebus.Injection;
 using Rebus.Logging;
+using Rebus.Pipeline;
+using Rebus.Pipeline.Receive;
 using Rebus.Sagas;
 using Rebus.SqlServer;
 using Rebus.SqlServer.Sagas;
@@ -91,6 +93,9 @@ public static class SqlServerSagaConfigurationExtensions
         if (configurer == null) throw new ArgumentNullException(nameof(configurer));
         if (dataTableName == null) throw new ArgumentNullException(nameof(dataTableName));
         if (indexTableName == null) throw new ArgumentNullException(nameof(indexTableName));
+
+        configurer.OtherService<IPipeline>().Decorate(c => new PipelineStepInjector(c.Get<IPipeline>())
+            .OnReceive(new SagaAttemptSavepointStep(), PipelineRelativePosition.Before, typeof(LoadSagaDataStep)));
 
         configurer.Register(c =>
         {
