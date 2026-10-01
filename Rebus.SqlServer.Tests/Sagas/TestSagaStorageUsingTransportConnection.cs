@@ -160,8 +160,9 @@ public class TestSagaStorageUsingTransportConnection : FixtureBase
             }
         }
 
+        var expectedProbes = probes.Count + 1;
         await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
-        await WaitForProbes(probes, probes.Count + 1);
+        await WaitForProbes(probes, expectedProbes);
 
         var expected = Enumerable.Range(1, probes.Count).Select(n => n.ToString());
 
@@ -185,6 +186,30 @@ public class TestSagaStorageUsingTransportConnection : FixtureBase
 
         Assert.That(probes, Is.EqualTo(new[] { "1" }));
         Assert.That(CountRows(scenario.WorkTable), Is.EqualTo(1), "Only the successful attempt's handler write may survive");
+    }
+
+    [Test]
+    [Description("Completing a saga deletes it; if the commit then fails, the redelivered message must still find the saga")]
+    public async Task SagaDeletionIsRolledBackWhenTransportCommitFails()
+    {
+        var scenario = new Scenario { FailCommitOnAttempt = 2 };
+
+        var probes = StartBus(scenario, workers: 1);
+        var sagaId = Guid.NewGuid();
+
+        await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
+        await WaitForProbes(probes, 1);
+
+        await Bus.SendLocal(new Finish(sagaId));
+        await WaitForProbes(probes, 2);
+
+        Assert.That(probes, Is.EqualTo(new[] { "1", "finished:1" }), "The retry of the completing message must find the saga its failed attempt deleted");
+        Assert.That(scenario.Attempts, Is.EqualTo(3));
+
+        await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
+        await WaitForProbes(probes, 3);
+
+        Assert.That(probes.Last(), Is.EqualTo("1"), "Once completed for real, the saga is gone and the next message starts a new one");
     }
 
     [Test]
@@ -269,24 +294,34 @@ Rebus dead-letters a message in the same transaction and commits it, so that hal
             await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false, HoldCommit: true));
             await scenario.CommitHeld.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
-            // with RCSI this one reads the saga as it was before the held update, so its own update loses
             await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
-            await Task.Delay(TimeSpan.FromSeconds(2));
+
+            // With RCSI the saga is loaded before the handler runs, without waiting for the held update, so once the handler has
+            // started this message holds the old revision and its update must lose. Without RCSI the load waits for the held
+            // update, so the handler only starts after the release and nothing conflicts.
+            if (_readCommittedSnapshot)
+            {
+                await scenario.WhenAttemptStarts(3).WaitAsync(TimeSpan.FromSeconds(30));
+            }
         }
         finally
         {
             scenario.ReleaseCommit.TrySetResult();
         }
 
-        await WaitForProbes(probes, 2);
-
         if (_readCommittedSnapshot)
         {
-            Assert.That(CountRows($"{_queueName}-error"), Is.EqualTo(1), "Expected the conflicting message to be dead-lettered");
+            await WaitUntil(() => CountRows($"{_queueName}-error") == 1, "the conflicting message to be dead-lettered");
+            await WaitForProbes(probes, 2);
+        }
+        else
+        {
+            await WaitForProbes(probes, 3);
         }
 
+        var expectedProbes = probes.Count + 1;
         await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
-        await WaitForProbes(probes, probes.Count + 1);
+        await WaitForProbes(probes, expectedProbes);
 
         var expected = Enumerable.Range(1, probes.Count).Select(n => n.ToString());
 
@@ -332,6 +367,18 @@ WITH n AS (SELECT TOP ({count}) NEWID() AS id FROM sys.all_objects a CROSS JOIN 
 SELECT id INTO #ids FROM n;
 INSERT INTO [{_queueName}-data] ([id], [revision], [data]) SELECT id, 0, 0x00 FROM #ids;
 INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT 'Seeded', 'CorrelationId', CONVERT(nvarchar(200), id), id FROM #ids;");
+    }
+
+    static async Task WaitUntil(Func<bool> condition, string what)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        while (!condition())
+        {
+            if (timeout.IsCancellationRequested) Assert.Fail($"Timed out waiting for {what}");
+
+            await Task.Delay(50);
+        }
     }
 
     static async Task<bool> WaitForProbeCount(ConcurrentQueue<string> probes, int expectedCount, TimeSpan within)
@@ -480,11 +527,24 @@ INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT
         public string WorkTable { get; init; }
         public TaskCompletionSource CommitHeld { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseCommit { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        readonly ConcurrentDictionary<int, TaskCompletionSource> _attemptStarted = new();
+
         public int Attempts => _attempts;
-        public int NextAttempt() => Interlocked.Increment(ref _attempts);
+
+        public Task WhenAttemptStarts(int attempt) => AttemptStarted(attempt).Task;
+
+        public int NextAttempt()
+        {
+            var attempt = Interlocked.Increment(ref _attempts);
+            AttemptStarted(attempt).TrySetResult();
+            return attempt;
+        }
+
+        TaskCompletionSource AttemptStarted(int attempt) =>
+            _attemptStarted.GetOrAdd(attempt, _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
     }
 
-    class CountingSaga : Saga<CountingSagaData>, IAmInitiatedBy<Count>
+    class CountingSaga : Saga<CountingSagaData>, IAmInitiatedBy<Count>, IHandleMessages<Finish>
     {
         readonly IBus _bus;
         readonly Scenario _scenario;
@@ -498,6 +558,21 @@ INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT
         protected override void CorrelateMessages(ICorrelationConfig<CountingSagaData> config)
         {
             config.Correlate<Count>(m => m.SagaId, d => d.CorrelationId);
+            config.Correlate<Finish>(m => m.SagaId, d => d.CorrelationId);
+        }
+
+        public async Task Handle(Finish message)
+        {
+            var attempt = _scenario.NextAttempt();
+
+            await _bus.SendLocal(new Probe($"finished:{Data.Count}"));
+
+            MarkAsComplete();
+
+            if (attempt == _scenario.FailCommitOnAttempt)
+            {
+                MessageContext.Current.TransactionContext.OnCommit(async _ => throw new InvalidOperationException("commit fails after the saga was deleted"));
+            }
         }
 
         public async Task Handle(Count message)
@@ -596,6 +671,8 @@ INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT
     }
 
     record Count(Guid SagaId, bool SendOnlyOnce, bool HoldCommit = false);
+
+    record Finish(Guid SagaId);
 
     record Explode(Guid SagaId);
 
