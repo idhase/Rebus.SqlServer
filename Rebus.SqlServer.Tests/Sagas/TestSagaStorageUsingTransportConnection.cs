@@ -12,6 +12,7 @@ using Rebus.Config;
 using Rebus.Handlers;
 using Rebus.Pipeline;
 using Rebus.Pipeline.Receive;
+using Rebus.Retry.FailFast;
 using Rebus.Retry.Simple;
 using Rebus.Sagas;
 using Rebus.SqlServer.Sagas;
@@ -232,12 +233,17 @@ public class TestSagaStorageUsingTransportConnection : FixtureBase
         Assert.That(probes.Last(), Is.EqualTo("1"), "Once completed for real, the saga is gone and the next message starts a new one");
     }
 
-    [Test]
+    [TestCase(false)]
+    [TestCase(true)]
     [Description(@"Rebus saves a message's sagas one after the other once all handlers are done. When a later save fails and the message is
-dead-lettered in the same transaction, an earlier saga's successful update must not be committed with it")]
-    public async Task EarlierSagaUpdateIsRolledBackWhenALaterSagaSaveFailsAndTheMessageIsDeadLettered()
+dead-lettered in the same transaction, an earlier saga's successful update must not be committed with it. Dead-lettered on the last
+attempt, or on the first one when the exception is configured to fail fast")]
+    public async Task EarlierSagaUpdateIsRolledBackWhenALaterSagaSaveFailsAndTheMessageIsDeadLettered(bool failFast)
     {
-        var probes = StartBus(new Scenario(), workers: 1, maxDeliveryAttempts: 1);
+        var scenario = new Scenario();
+        var probes = failFast
+            ? StartBus(scenario, workers: 1, maxDeliveryAttempts: 5, failFastOnInvalidOperation: true)
+            : StartBus(scenario, workers: 1, maxDeliveryAttempts: 1);
         var sagaId = Guid.NewGuid();
 
         await Bus.SendLocal(new Both(sagaId, FailSecondSave: false));
@@ -250,15 +256,89 @@ dead-lettered in the same transaction, an earlier saga's successful update must 
         await WaitForProbes(probes, 4);
 
         Assert.That(probes, Is.EquivalentTo(new[] { "first:1", "second:1", "first:2", "second:2" }), "The dead-lettered message must have left both sagas as they were");
+        Assert.That(scenario.Attempts, Is.EqualTo(3), "Expected the failing message to be handled once before it was dead-lettered");
     }
 
     [Test]
-    [Description("On the 2nd level retry path the transaction is committed after the handler failed, with the IFailed<T> handler's work in it")]
-    public async Task SagaUpdateFromFailedHandlerIsRolledBackWhenTransportCommitFails()
+    [Description(@"Saga.ResolveConflict retries the update within the same attempt. The update that lost must not have touched the index, because
+the retry skips rewriting the index when the resolved data equals the fresh row")]
+    public async Task ResolvedConflictKeepsTheSagaFindable()
+    {
+        var scenario = new Scenario();
+        var probes = StartBus(scenario, workers: 2);
+        var sagaId = Guid.NewGuid();
+
+        await Bus.SendLocal(new Resolve(sagaId));
+        await WaitForProbes(probes, 1);
+
+        try
+        {
+            await Bus.SendLocal(new Resolve(sagaId, HoldCommit: true));
+            await scenario.CommitHeld.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await Bus.SendLocal(new Resolve(sagaId));
+
+            // with RCSI the saga is loaded before the handler runs, without waiting for the held update, so this message's update
+            // loses and goes through ResolveConflict. Without RCSI the load waits for the held update and nothing conflicts.
+            if (_readCommittedSnapshot)
+            {
+                await scenario.WhenAttemptStarts(3).WaitAsync(TimeSpan.FromSeconds(30));
+            }
+        }
+        finally
+        {
+            scenario.ReleaseCommit.TrySetResult();
+        }
+
+        await WaitForProbes(probes, 3);
+
+        if (_readCommittedSnapshot)
+        {
+            Assert.That(scenario.Resolutions, Is.EqualTo(1), "Expected the third message to resolve a conflict");
+        }
+
+        Assert.That(CountRows($"{_queueName}-index"), Is.EqualTo(1), "The saga must keep its index row");
+
+        await Bus.SendLocal(new Resolve(sagaId));
+        await WaitForProbes(probes, 4);
+
+        // with RCSI the resolution kept the held message's count, without RCSI the third message counted on top of it
+        var expectedCount = _readCommittedSnapshot ? 3 : 4;
+
+        Assert.That(probes.Last(), Is.EqualTo($"resolve:{expectedCount}"), "The next message must find the saga, not start a new one");
+    }
+
+    [Test]
+    [Description(@"When the commit itself fails on the last attempt, Rebus dead-letters the message with commit: false and then acks, which commits the
+transport's transaction. The attempt's saga update and outgoing messages must be rolled back first")]
+    public async Task SagaUpdateIsNotCommittedWhenTheCommitFailsOnTheLastAttempt()
+    {
+        var scenario = new Scenario { FailCommitOnAttempt = 2 };
+
+        var probes = StartBus(scenario, workers: 1, maxDeliveryAttempts: 1);
+        var sagaId = Guid.NewGuid();
+
+        await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
+        await WaitForProbes(probes, 1);
+
+        await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
+        await WaitUntil(() => CountRows($"{_queueName}-error") == 1, "the message whose commit fails to be dead-lettered");
+
+        await Bus.SendLocal(new Count(sagaId, SendOnlyOnce: false));
+        await WaitForProbes(probes, 2);
+
+        Assert.That(probes, Is.EqualTo(new[] { "1", "2" }), "The dead-lettered message's saga update and probe must not have been committed");
+    }
+
+    [TestCase(ErrorHandlerMode.Immediately)]
+    [TestCase(ErrorHandlerMode.NextDelivery)]
+    [Description(@"On the 2nd level retry path the transaction is committed after the handler failed, with the IFailed<T> handler's work in it.
+Immediately runs IFailed<T> in the same delivery, NextDelivery in the next one")]
+    public async Task SagaUpdateFromFailedHandlerIsRolledBackWhenTransportCommitFails(ErrorHandlerMode errorHandlerMode)
     {
         var scenario = new Scenario { FailCommitOnAttempt = 1 };
 
-        var probes = StartBus(scenario, workers: 1, maxDeliveryAttempts: 1, secondLevelRetries: true);
+        var probes = StartBus(scenario, workers: 1, maxDeliveryAttempts: 1, secondLevelRetries: true, errorHandlerMode: errorHandlerMode);
 
         await Bus.SendLocal(new Explode(Guid.NewGuid()));
 
@@ -439,14 +519,16 @@ INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT
 
     int _decoratorReceives;
 
-    ConcurrentQueue<string> StartBus(Scenario scenario, int workers, bool withSavepointStep = false, int maxDeliveryAttempts = 100, bool secondLevelRetries = false, bool decorateTransport = false)
+    ConcurrentQueue<string> StartBus(Scenario scenario, int workers, bool withSavepointStep = false, int maxDeliveryAttempts = 100, bool secondLevelRetries = false, bool decorateTransport = false,
+        ErrorHandlerMode errorHandlerMode = ErrorHandlerMode.Immediately, bool failFastOnInvalidOperation = false)
     {
         var probes = new ConcurrentQueue<string>();
         var activator = Using(new BuiltinHandlerActivator());
 
         activator.Register((bus, _) => new CountingSaga(bus, scenario));
         activator.Register((bus, _) => new FailedHandlerSaga(bus, scenario));
-        activator.Register((bus, _) => new FirstOfBothSaga(bus));
+        activator.Register((bus, _) => new FirstOfBothSaga(bus, scenario));
+        activator.Register((bus, _) => new ResolvingSaga(bus, scenario));
         activator.Register((bus, _) => new SecondOfBothSaga(bus));
         activator.Handle<Probe>(async probe => probes.Enqueue(probe.Value));
 
@@ -457,7 +539,13 @@ INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT
             {
                 o.SetNumberOfWorkers(workers);
                 o.SetMaxParallelism(workers);
-                o.RetryStrategy($"{_queueName}-error", maxDeliveryAttempts: maxDeliveryAttempts, secondLevelRetriesEnabled: secondLevelRetries);
+                o.RetryStrategy($"{_queueName}-error", maxDeliveryAttempts: maxDeliveryAttempts, secondLevelRetriesEnabled: secondLevelRetries, errorHandlerMode: errorHandlerMode);
+
+                if (failFastOnInvalidOperation)
+                {
+                    // the saga serializer wraps the exception thrown while saving, so match on what's inside it
+                    o.FailFastOn<Exception>(exception => exception.GetBaseException() is InvalidOperationException);
+                }
 
                 if (decorateTransport)
                 {
@@ -590,6 +678,9 @@ INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT
         public int FailCommitOnAttempt { get; init; }
         public int ThrowOnAttempt { get; init; }
         public string WorkTable { get; init; }
+        int _resolutions;
+        public int Resolutions => _resolutions;
+        public void Resolved() => Interlocked.Increment(ref _resolutions);
         public TaskCompletionSource CommitHeld { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseCommit { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         readonly ConcurrentDictionary<int, TaskCompletionSource> _attemptStarted = new();
@@ -741,17 +832,73 @@ INSERT INTO [{_queueName}-index] ([saga_type], [key], [value], [saga_id]) SELECT
 
     record Both(Guid SagaId, bool FailSecondSave);
 
+    record Resolve(Guid SagaId, bool HoldCommit = false);
+
+    class ResolvingSaga : Saga<ResolvingSagaData>, IAmInitiatedBy<Resolve>
+    {
+        readonly IBus _bus;
+        readonly Scenario _scenario;
+
+        public ResolvingSaga(IBus bus, Scenario scenario)
+        {
+            _bus = bus;
+            _scenario = scenario;
+        }
+
+        protected override void CorrelateMessages(ICorrelationConfig<ResolvingSagaData> config) =>
+            config.Correlate<Resolve>(m => m.SagaId, d => d.CorrelationId);
+
+        public async Task Handle(Resolve message)
+        {
+            _scenario.NextAttempt();
+
+            Data.CorrelationId = message.SagaId;
+            Data.Seen++;
+
+            await _bus.SendLocal(new Probe($"resolve:{Data.Seen}"));
+
+            if (message.HoldCommit)
+            {
+                MessageContext.Current.TransactionContext.OnCommit(async _ =>
+                {
+                    _scenario.CommitHeld.TrySetResult();
+                    await _scenario.ReleaseCommit.Task;
+                });
+            }
+        }
+
+        // theirs wins, so the resolved data serializes exactly like the fresh row
+        protected override Task ResolveConflict(ResolvingSagaData otherSagaData)
+        {
+            _scenario.Resolved();
+            Data.Seen = otherSagaData.Seen;
+            return Task.CompletedTask;
+        }
+    }
+
+    class ResolvingSagaData : SagaData
+    {
+        public Guid CorrelationId { get; set; }
+        public int Seen { get; set; }
+    }
+
     class FirstOfBothSaga : Saga<FirstOfBothSagaData>, IAmInitiatedBy<Both>
     {
         readonly IBus _bus;
+        readonly Scenario _scenario;
 
-        public FirstOfBothSaga(IBus bus) => _bus = bus;
+        public FirstOfBothSaga(IBus bus, Scenario scenario)
+        {
+            _bus = bus;
+            _scenario = scenario;
+        }
 
         protected override void CorrelateMessages(ICorrelationConfig<FirstOfBothSagaData> config) =>
             config.Correlate<Both>(m => m.SagaId, d => d.CorrelationId);
 
         public async Task Handle(Both message)
         {
+            _scenario.NextAttempt();
             Data.CorrelationId = message.SagaId;
             Data.Count++;
             await _bus.SendLocal(new Probe($"first:{Data.Count}"));

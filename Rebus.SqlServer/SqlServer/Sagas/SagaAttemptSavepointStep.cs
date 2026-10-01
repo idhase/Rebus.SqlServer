@@ -22,7 +22,8 @@ class SagaAttemptSavepointStep : IIncomingStep
 
     public async Task Process(IncomingStepContext context, Func<Task> next)
     {
-        var transaction = await GetTransportTransaction(context.Load<ITransactionContext>()).ConfigureAwait(false);
+        var transactionContext = context.Load<ITransactionContext>();
+        var transaction = await GetTransportTransaction(transactionContext).ConfigureAwait(false);
 
         // synchronous: SqlTransaction has no SaveAsync on netstandard2.0
         transaction.Save(SavepointName);
@@ -33,17 +34,32 @@ class SagaAttemptSavepointStep : IIncomingStep
         }
         catch
         {
-            try
-            {
-                transaction.Rollback(SavepointName);
-            }
-            catch (Exception)
-            {
-                // must not replace the exception being rethrown. If rolling back to the savepoint fails, the transaction is
-                // already doomed (e.g. a deadlock victim), and the transport won't commit it.
-            }
-
+            RollBackToSavepoint(transaction);
             throw;
+        }
+
+        // The attempt succeeded, but committing it can still fail (an OnCommit callback, or inserting the outgoing messages). On
+        // the last attempt Rebus then dead-letters the message with commit: false and ack: true, which runs OnRollback and then
+        // OnAck, where the transport commits its transaction. Rolling back here keeps the attempt's work out of that commit.
+        // When the message is retried instead, the whole transaction is rolled back anyway.
+        transactionContext.OnRollback(_ =>
+        {
+            RollBackToSavepoint(transaction);
+            return Task.CompletedTask;
+        });
+    }
+
+    static void RollBackToSavepoint(Microsoft.Data.SqlClient.SqlTransaction transaction)
+    {
+        try
+        {
+            // the savepoint stays valid after rolling back to it, so a 2nd level retry pass can roll back to its own one again
+            transaction.Rollback(SavepointName);
+        }
+        catch (Exception)
+        {
+            // must not replace the exception being handled. If rolling back to the savepoint fails, the transaction is already
+            // doomed (e.g. a deadlock victim), and committing it fails too.
         }
     }
 
