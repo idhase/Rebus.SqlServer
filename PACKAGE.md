@@ -10,7 +10,7 @@ It follows upstream closely, and configuration and usage are the same. See the [
 - Table names can include a database, as in `catalog.schema.table`. This is meant for sending to queues in other databases on the same server. Don't use it for tables that Rebus creates (input queues, sagas, subscriptions, timeouts, outbox), because the checks for whether those exist only look in the current database.
 - Fixes and improvements that aren't in upstream yet, see below.
 
-## Unreleased
+## What's new in 1.0.10
 
 ### Improvements
 
@@ -19,7 +19,7 @@ It follows upstream closely, and configuration and usage are the same. See the [
 - Saga rows stay locked until the transport commits, not just until the saga is saved. With READ_COMMITTED_SNAPSHOT on, messages to other sagas aren't held up. With it off and near-empty saga tables, the saga lookup scans the data table and waits for other sagas' uncommitted rows until their messages commit.
 - `EnforceExclusiveAccess()` releases its lock when the pipeline is done, before the transport commits. With READ_COMMITTED_SNAPSHOT on, a second message to the same saga then reads the last committed saga data and gets a `ConcurrencyException` when it saves, and is retried. That's correct but noisier than with `StoreInSqlServer`. Sagas that get bursts of messages should override `ResolveConflict` and merge.
 - A failed attempt leaves nothing behind when Rebus dead-letters the message or sends it to 2nd level retry, both of which commit the transaction: the saga writes, the handler writes made through the transport's connection, and outgoing messages already inserted are rolled back to a savepoint taken before the sagas were loaded. That also holds when the attempt succeeded but committing it failed on the last attempt.
-- With Idha.Rebus.NPoco, `OnTransactionCommit` callbacks still fire for work that was rolled back this way, because `NPocoDatabaseStep` registers them once the handlers are done, before the sagas are saved and the transaction commits. Fixing that needs a change in Idha.Rebus.NPoco.
+- With Idha.Rebus.NPoco, use 3.0.2 or later. Up to 3.0.1, `NPocoDatabaseStep` registers its `OnTransactionCommit` callbacks once the handlers are done, before the sagas are saved and the transaction commits, so the callbacks still fire for work that was rolled back this way. 3.0.2 runs the step before the sagas are loaded and drops its callbacks when the attempt is rolled back.
 - A transaction SQL Server dooms on the last attempt (a deadlock victim, for example) can't be committed, so Rebus dead-letters the message again on every redelivery. That's Rebus's and the transport's behaviour, not new, but a deadlock on the saga tables now dooms the transport's transaction where it used to only fail the saga's own.
 
 ### Fixes
