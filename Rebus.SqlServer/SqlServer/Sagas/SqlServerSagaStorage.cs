@@ -369,18 +369,9 @@ WHERE [index].[saga_type] = @saga_type
 
         try
         {
-            // first, delete existing index if necessary
-            if (oneOrMoreSagaPropertiesMightHaveBeenUpdated)
-            {
-                using var command = connection.CreateCommand();
-
-                command.CommandText = $@"DELETE FROM {_indexTableName.QualifiedName} WHERE [saga_id] = @id";
-                command.Parameters.Add("id", SqlDbType.UniqueIdentifier).Value = sagaData.Id;
-
-                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
-            }
-
-            // next, update or insert the saga
+            // first, update the saga. The revision check must come before the index is touched: when the saga storage shares the
+            // transport's transaction, an update that loses here has nothing of its own to roll back, and Saga.ResolveConflict
+            // retries it within the same transaction
             using (var command = connection.CreateCommand())
             {
                 var data = _sagaSerializer.SerializeToString(sagaData);
@@ -404,8 +395,17 @@ UPDATE {_dataTableName.QualifiedName}
                 }
             }
 
+            // then replace the index, if necessary
             if (oneOrMoreSagaPropertiesMightHaveBeenUpdated)
             {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = $@"DELETE FROM {_indexTableName.QualifiedName} WHERE [saga_id] = @id";
+                    command.Parameters.Add("id", SqlDbType.UniqueIdentifier).Value = sagaData.Id;
+
+                    await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
+
                 var propertiesToIndex = GetPropertiesToIndex(sagaData, correlationProperties);
 
                 if (propertiesToIndex.Any())

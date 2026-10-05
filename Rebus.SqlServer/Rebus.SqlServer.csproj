@@ -22,10 +22,10 @@
 		<IncludeSymbols>true</IncludeSymbols>
 		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
 		<PackageId>Idha.Rebus.SqlServer</PackageId>
-		<Version>1.0.9</Version>
-		<AssemblyVersion>1.0.9</AssemblyVersion>
+		<Version>1.0.10</Version>
+		<AssemblyVersion>1.0.10</AssemblyVersion>
 		<PackageReadmeFile>PACKAGE.md</PackageReadmeFile>
-		<PackageReleaseNotes>1.0.9: Messages from a failed handler attempt are no longer sent on 2nd level retries, SqlServerTimeoutManager no longer stalls for 30 seconds on a lock, and a handler's messages are inserted with multi-row INSERTs. Requires Rebus 8.9.0 and Microsoft.Data.SqlClient 6.1.2. See the package README for details and https://github.com/idhase/Rebus.SqlServer/blob/master/CHANGELOG.md for the full history.</PackageReleaseNotes>
+		<PackageReleaseNotes>1.0.10: new StoreInSqlServerUsingTransportConnection saga storage, which reads and writes saga data in the SQL Server transport's transaction so a saga update commits or rolls back with the receive and the sends, and rolls a failed attempt back to a savepoint before Rebus dead-letters or retries it. SqlServerSagaStorage.Update now writes the saga row before its index rows. Requires Rebus 8.9.0 and Microsoft.Data.SqlClient 6.1.2. See the package README for details and https://github.com/idhase/Rebus.SqlServer/blob/master/CHANGELOG.md for the full history.</PackageReleaseNotes>
 	</PropertyGroup>
 	<ItemGroup>
 		<PackageReference Include="microsoft.data.sqlclient" Version="6.1.2" />
